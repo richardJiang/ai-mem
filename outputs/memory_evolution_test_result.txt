@@ -1,0 +1,52 @@
+=== RUN   TestMemoryEvolutionWithRuleChanges
+    memory_evolution_test.go:21: ===== 阶段1：规则门槛=100 =====
+    memory_evolution_test.go:28: Task1: points=90, threshold=100, correct=true
+    memory_evolution_test.go:38: 
+        ===== 阶段2：规则变更为门槛=120 =====
+    memory_evolution_test.go:57: 检索到旧记忆: 当用户积分低于100时，拒绝抽奖 (version=1, use_count=3)
+    memory_evolution_test.go:62: Task2: points=110, threshold=120(新规则), correct=true (旧记忆导致判错)
+    memory_evolution_test.go:73: 
+        ===== 阶段3：规则又变回门槛=100 =====
+    memory_evolution_test.go:104: 检索到多版本记忆:
+    memory_evolution_test.go:106:   - version=1, confidence=0.90, use_count=3: 当用户积分低于100时，拒绝抽奖
+    memory_evolution_test.go:106:   - version=2, confidence=0.85, use_count=1: 当用户积分低于120时，拒绝抽奖（新规则）
+    memory_evolution_test.go:112: Task3: points=105, threshold=100(变回), correct=true
+    memory_evolution_test.go:115: 使用version=1的旧记忆，判断正确！说明版本演化机制有一定容错能力
+    memory_evolution_test.go:119: 
+        ===== 阶段4：模拟频繁变化导致的记忆混乱 =====
+    memory_evolution_test.go:159: 轮次2: 旧threshold=100, 新threshold=120, points=110, 判错! 生成记忆 version=2
+    memory_evolution_test.go:159: 轮次5: 旧threshold=100, 新threshold=130, points=120, 判错! 生成记忆 version=5
+    memory_evolution_test.go:164: 
+        经过6次规则变化，累积了2条互相矛盾的记忆
+    memory_evolution_test.go:166: 记忆列表:
+    memory_evolution_test.go:168:   - 当用户积分低于120时，拒绝抽奖 (confidence=0.81, version=2)
+    memory_evolution_test.go:168:   - 当用户积分低于130时，拒绝抽奖 (confidence=0.84, version=5)
+    memory_evolution_test.go:171: 问题：当前系统只按 confidence + use_count 排序，无法识别哪条是'当前有效'的规则
+    memory_evolution_test.go:172: 解决方向：需要引入时间维度、废弃机制、或反向降权逻辑
+    memory_evolution_test.go:431: 
+        ✅ 记忆演化测试报告已生成: /Users/jiangyj/work/src/test/mem-test/outputs/memory_evolution_report_20251218_110145.json
+--- PASS: TestMemoryEvolutionWithRuleChanges (0.00s)
+=== RUN   TestMemoryRetrievalPriority
+    memory_evolution_test.go:180: ===== 测试记忆检索排序逻辑 =====
+    memory_evolution_test.go:213: 按当前规则排序 (confidence DESC, use_count DESC):
+    memory_evolution_test.go:216:   1. ID=2, confidence=0.95, use_count=2, version=2: 新规则
+    memory_evolution_test.go:216:   2. ID=1, confidence=0.90, use_count=10, version=1: 旧规则
+    memory_evolution_test.go:216:   3. ID=3, confidence=0.85, use_count=1, version=3: 最新规则（变回）
+    memory_evolution_test.go:220: 
+        观察：
+    memory_evolution_test.go:221: - 新规则(id=2)因为高置信度排第一 ✓
+    memory_evolution_test.go:222: - 但如果规则又变回去，version=3 应该优先，现在却排最后 ✗
+    memory_evolution_test.go:223: - 缺少'最近验证正确'的时间维度
+--- PASS: TestMemoryRetrievalPriority (0.00s)
+=== RUN   TestMemoryDeprecationScenario
+    memory_evolution_test.go:228: ===== 模拟记忆废弃场景 =====
+    memory_evolution_test.go:240: 初始记忆: 积分低于100拒绝 (confidence=0.90, use_count=5)
+    memory_evolution_test.go:244: 任务: points=105, 使用记忆A推理...
+    memory_evolution_test.go:263: 
+        当前实现的问题：
+    memory_evolution_test.go:264: - Task.MemoryIDs 记录了使用的记忆ID ✓
+    memory_evolution_test.go:265: - 但判错后，不会反向追责并降权这些记忆 ✗
+    memory_evolution_test.go:266: - 需要在 CoachService.JudgeLotteryTask 之后，增加降权逻辑
+--- PASS: TestMemoryDeprecationScenario (0.00s)
+PASS
+ok  	mem-test/internal/service	0.229s

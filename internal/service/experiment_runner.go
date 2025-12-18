@@ -1,0 +1,237 @@
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"math/rand"
+	"os"
+	"path/filepath"
+	"time"
+
+	"mem-test/internal/db"
+	"mem-test/internal/model"
+)
+
+type ExperimentRunRequest struct {
+	TaskType     string   `json:"task_type"`
+	RunsPerGroup int      `json:"runs_per_group"`
+	Seed         int64    `json:"seed"`
+	Groups       []string `json:"groups"`
+	Action       string   `json:"action"`
+}
+
+type ExperimentRunResult struct {
+	RunID              uint                   `json:"run_id"`
+	Seed               int64                  `json:"seed"`
+	TaskType           string                 `json:"task_type"`
+	RunsPerGroup       int                    `json:"runs_per_group"`
+	Groups             []string               `json:"groups"`
+	Stats              map[string]GroupStats  `json:"stats"`
+	Tests              map[string]interface{} `json:"tests"`
+	Trend              map[string][]int       `json:"trend"` // group -> incorrect flags by round
+	Conclusion         map[string]interface{} `json:"conclusion"`
+	ResultPath         string                 `json:"result_path"`
+	ConclusionPath     string                 `json:"conclusion_path"`
+	ConclusionMarkdown string                 `json:"conclusion_markdown"`
+	Errors             []string               `json:"errors"`
+}
+
+type ExperimentRunner struct {
+	agent      *AgentService
+	coach      *CoachService
+	reflection *ReflectionService
+}
+
+func NewExperimentRunner(agent *AgentService, coach *CoachService, reflection *ReflectionService) *ExperimentRunner {
+	return &ExperimentRunner{
+		agent:      agent,
+		coach:      coach,
+		reflection: reflection,
+	}
+}
+
+func (r *ExperimentRunner) Run(ctx context.Context, req ExperimentRunRequest) (*ExperimentRunResult, error) {
+	if req.TaskType == "" {
+		req.TaskType = "lottery"
+	}
+	if req.Action == "" {
+		req.Action = "lottery"
+	}
+	if req.RunsPerGroup <= 0 {
+		req.RunsPerGroup = 30
+	}
+	if req.Seed == 0 {
+		req.Seed = time.Now().UnixNano()
+	}
+	if len(req.Groups) == 0 {
+		req.Groups = []string{"A", "B", "C"}
+	}
+
+	groupsJSON, _ := json.Marshal(req.Groups)
+	run := &model.ExperimentRun{
+		TaskType:     req.TaskType,
+		RunsPerGroup: req.RunsPerGroup,
+		Seed:         req.Seed,
+		GroupsJSON:   string(groupsJSON),
+	}
+	if err := db.DB.Create(run).Error; err != nil {
+		return nil, fmt.Errorf("创建实验run失败: %w", err)
+	}
+
+	var lotteryInputs []map[string]interface{}
+	switch req.TaskType {
+	case "lottery_v2":
+		lotteryInputs = buildLotteryV2Inputs(req.RunsPerGroup, req.Seed, req.Action)
+	default:
+		pointsSeq := buildLotteryPoints(req.RunsPerGroup, req.Seed)
+		lotteryInputs = make([]map[string]interface{}, 0, len(pointsSeq))
+		for i := range pointsSeq {
+			lotteryInputs = append(lotteryInputs, map[string]interface{}{
+				"points": pointsSeq[i],
+				"action": req.Action,
+			})
+		}
+	}
+
+	result := &ExperimentRunResult{
+		RunID:        run.ID,
+		Seed:         req.Seed,
+		TaskType:     req.TaskType,
+		RunsPerGroup: req.RunsPerGroup,
+		Groups:       req.Groups,
+		Stats:        map[string]GroupStats{},
+		Tests:        map[string]interface{}{},
+		Trend:        map[string][]int{},
+		Conclusion:   map[string]interface{}{},
+	}
+
+	for _, g := range req.Groups {
+		result.Trend[g] = make([]int, 0, req.RunsPerGroup)
+	}
+
+	// 论文级：按轮次交错运行，尽量消除模型/环境随时间漂移的干扰
+	for i := 0; i < req.RunsPerGroup; i++ {
+		in := lotteryInputs[i]
+		inputJSON, _ := json.Marshal(in)
+		inputStr := string(inputJSON)
+
+		for _, group := range req.Groups {
+			useMemory := group != "A"
+			task, err := r.agent.ExecuteTaskInRun(ctx, run.ID, req.TaskType, inputStr, group, useMemory)
+			if err != nil {
+				result.Errors = append(result.Errors, fmt.Sprintf("run=%d group=%s round=%d execute failed: %v", run.ID, group, i, err))
+				result.Trend[group] = append(result.Trend[group], 1)
+				continue
+			}
+
+			var feedback *model.Feedback
+			switch req.TaskType {
+			case "lottery_v2":
+				feedback, err = r.coach.JudgeLotteryV2Task(ctx, task)
+			default:
+				feedback, err = r.coach.JudgeLotteryTask(ctx, task)
+			}
+			if err != nil {
+				result.Errors = append(result.Errors, fmt.Sprintf("run=%d group=%s round=%d judge failed: %v", run.ID, group, i, err))
+				result.Trend[group] = append(result.Trend[group], 1)
+				continue
+			}
+
+			if feedback.Type == "incorrect" {
+				result.Trend[group] = append(result.Trend[group], 1)
+				if group == "C" {
+					if _, err := r.reflection.ReflectAndSaveMemory(ctx, task.ID, feedback); err != nil {
+						result.Errors = append(result.Errors, fmt.Sprintf("run=%d group=%s round=%d reflect failed: %v", run.ID, group, i, err))
+					}
+				}
+			} else {
+				result.Trend[group] = append(result.Trend[group], 0)
+			}
+		}
+	}
+
+	// 严谨统计：只统计本 run_id
+	stats, tests, err := ComputeRunStatsAndTests(run.ID, req.Groups, result.Trend)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("run=%d stats failed: %v", run.ID, err))
+	}
+	result.Stats = stats
+	result.Tests = tests
+	result.Conclusion = GenerateConclusionFromStats(stats, tests, result.Trend)
+
+	// 输出文件
+	outDir := filepath.Join("outputs")
+	_ = os.MkdirAll(outDir, 0o755)
+	resultPath := filepath.Join(outDir, fmt.Sprintf("experiment_run_%d.json", run.ID))
+	conclusionPath := filepath.Join(outDir, fmt.Sprintf("experiment_run_%d_conclusion.md", run.ID))
+	result.ResultPath = resultPath
+	result.ConclusionPath = conclusionPath
+	result.ConclusionMarkdown = RenderConclusionMarkdown(run, result)
+
+	if b, err := json.MarshalIndent(result, "", "  "); err == nil {
+		_ = os.WriteFile(resultPath, b, 0o644)
+	}
+	_ = os.WriteFile(conclusionPath, []byte(result.ConclusionMarkdown), 0o644)
+
+	run.ResultPath = resultPath
+	run.ConclusionPath = conclusionPath
+	_ = db.DB.Save(run).Error
+
+	return result, nil
+}
+
+func buildLotteryPoints(n int, seed int64) []int {
+	base := []int{0, 1, 10, 50, 99, 100, 101, 150, 200}
+	out := make([]int, 0, n)
+	// 先塞边界用例
+	for len(out) < n && len(out) < len(base) {
+		out = append(out, base[len(out)])
+	}
+	// 再补随机点（0~200）
+	rng := rand.New(rand.NewSource(seed))
+	for len(out) < n {
+		out = append(out, rng.Intn(201))
+	}
+	return out
+}
+
+func buildLotteryV2Inputs(n int, seed int64, action string) []map[string]interface{} {
+	if action == "" {
+		action = "lottery"
+	}
+	// 先覆盖边界与组合用例，再补随机
+	base := []map[string]interface{}{
+		{"points": 0, "action": action, "is_vip": false, "is_blacklisted": false, "daily_draws": 0},
+		{"points": 79, "action": action, "is_vip": true, "is_blacklisted": false, "daily_draws": 0},
+		{"points": 80, "action": action, "is_vip": true, "is_blacklisted": false, "daily_draws": 0},
+		{"points": 99, "action": action, "is_vip": false, "is_blacklisted": false, "daily_draws": 0},
+		{"points": 100, "action": action, "is_vip": false, "is_blacklisted": false, "daily_draws": 0},
+		{"points": 150, "action": action, "is_vip": false, "is_blacklisted": false, "daily_draws": 1}, // 次数限制
+		{"points": 200, "action": action, "is_vip": true, "is_blacklisted": true, "daily_draws": 0},   // 黑名单
+	}
+
+	out := make([]map[string]interface{}, 0, n)
+	for len(out) < n && len(out) < len(base) {
+		out = append(out, base[len(out)])
+	}
+
+	rng := rand.New(rand.NewSource(seed))
+	for len(out) < n {
+		points := rng.Intn(201)
+		isVip := rng.Intn(2) == 0
+		isBlacklisted := rng.Intn(10) == 0 // 10% 黑名单
+		dailyDraws := 0
+		if rng.Intn(3) == 0 {
+			dailyDraws = 1 // 约 1/3 达到上限
+		}
+		out = append(out, map[string]interface{}{
+			"points":         points,
+			"action":         action,
+			"is_vip":         isVip,
+			"is_blacklisted": isBlacklisted,
+			"daily_draws":    dailyDraws,
+		})
+	}
+	return out
+}

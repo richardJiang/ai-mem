@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>外挂记忆实验系统</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .header h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .tab {
+            padding: 10px 20px;
+            background: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        
+        .tab.active {
+            background: #1890ff;
+            color: white;
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .card h2 {
+            margin-bottom: 15px;
+            color: #333;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #666;
+            font-size: 14px;
+        }
+        
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        
+        .form-group textarea {
+            min-height: 100px;
+            resize: vertical;
+        }
+        
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        
+        .btn-primary {
+            background: #1890ff;
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #40a9ff;
+        }
+        
+        .btn-success {
+            background: #52c41a;
+            color: white;
+        }
+        
+        .btn-danger {
+            background: #ff4d4f;
+            color: white;
+        }
+        
+        .result {
+            margin-top: 15px;
+            padding: 15px;
+            background: #f0f0f0;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            font-size: 13px;
+        }
+        
+        .memory-item {
+            padding: 15px;
+            border: 1px solid #e8e8e8;
+            border-radius: 4px;
+            margin-bottom: 10px;
+        }
+        
+        .memory-item .trigger {
+            font-weight: bold;
+            color: #1890ff;
+            margin-bottom: 5px;
+        }
+        
+        .memory-item .lesson {
+            color: #666;
+            margin-bottom: 5px;
+        }
+        
+        .memory-item .meta {
+            font-size: 12px;
+            color: #999;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+        
+        .stat-card {
+            background: #f0f0f0;
+            padding: 15px;
+            border-radius: 4px;
+            text-align: center;
+        }
+        
+        .stat-card .value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #1890ff;
+        }
+        
+        .stat-card .label {
+            font-size: 12px;
+            color: #999;
+            margin-top: 5px;
+        }
+        
+        .comparison-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+        
+        .comparison-table th,
+        .comparison-table td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #e8e8e8;
+        }
+        
+        .comparison-table th {
+            background: #f0f0f0;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🧠 外挂记忆实验系统</h1>
+            <p>最小可验证架构 - 论证外挂记忆的5个特性</p>
+        </div>
+        
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('task')">执行任务</button>
+            <button class="tab" onclick="switchTab('memory')">记忆库</button>
+            <button class="tab" onclick="switchTab('experiment')">实验对比</button>
+        </div>
+        
+        <!-- 执行任务 -->
+        <div id="task" class="tab-content active">
+            <div class="card">
+                <h2>执行任务</h2>
+                <div class="form-group">
+                    <label>任务类型</label>
+                    <select id="taskType">
+                        <option value="lottery">抽奖判断</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>输入（JSON格式）</label>
+                    <textarea id="taskInput" placeholder='{"points": 50, "action": "lottery"}'></textarea>
+                </div>
+                <div class="form-group">
+                    <label>实验组</label>
+                    <select id="groupType">
+                        <option value="A">A组（无记忆）</option>
+                        <option value="B">B组（有记忆，无反思）</option>
+                        <option value="C" selected>C组（有记忆+反思）</option>
+                    </select>
+                </div>
+                <button class="btn btn-primary" onclick="executeTask()">执行任务</button>
+                <div id="taskResult" class="result" style="display:none;"></div>
+            </div>
+            
+            <div class="card" id="feedbackCard" style="display:none;">
+                <h2>反馈</h2>
+                <div class="form-group">
+                    <label>反馈类型</label>
+                    <select id="feedbackType">
+                        <option value="correct">正确</option>
+                        <option value="incorrect">错误</option>
+                        <option value="better">更优解</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>反馈内容</label>
+                    <textarea id="feedbackContent" placeholder="请输入反馈内容..."></textarea>
+                </div>
+                <button class="btn btn-success" onclick="submitFeedback()">提交反馈</button>
+                <button class="btn btn-primary" onclick="autoJudge()">自动判断</button>
+            </div>
+        </div>
+        
+        <!-- 记忆库 -->
+        <div id="memory" class="tab-content">
+            <div class="card">
+                <h2>外挂记忆库</h2>
+                <button class="btn btn-primary" onclick="loadMemories()">刷新</button>
+                <div id="memoriesList"></div>
+            </div>
+        </div>
+        
+        <!-- 实验对比 -->
+        <div id="experiment" class="tab-content">
+            <div class="card">
+                <h2>实验统计</h2>
+                <button class="btn btn-primary" onclick="loadStats()">刷新统计</button>
+                <div id="statsContent"></div>
+            </div>
+            
+            <div class="card">
+                <h2>组间对比</h2>
+                <button class="btn btn-primary" onclick="compareGroups()">对比A/B/C组</button>
+                <div id="comparisonContent"></div>
+            </div>
+            
+            <div class="card">
+                <h2>错误趋势</h2>
+                <button class="btn btn-primary" onclick="loadTrend()">查看趋势</button>
+                <div id="trendContent"></div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const API_BASE = 'http://localhost:8080/api';
+        let currentTaskId = null;
+        
+        // 测试API连接
+        async function testConnection() {
+            try {
+                const res = await fetch(`${API_BASE}/memories`);
+                if (res.ok) {
+                    console.log('API连接正常');
+                } else {
+                    console.error('API连接失败:', res.status);
+                }
+            } catch (error) {
+                console.error('无法连接到API:', error);
+                alert('无法连接到后端服务，请确保服务已启动在 http://localhost:8080');
+            }
+        }
+        
+        // 页面加载时测试连接
+        window.addEventListener('load', () => {
+            testConnection();
+        });
+        
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById(tabName).classList.add('active');
+        }
+        
+        async function executeTask() {
+            const taskType = document.getElementById('taskType').value;
+            const input = document.getElementById('taskInput').value;
+            const groupType = document.getElementById('groupType').value;
+            const useMemory = groupType !== 'A';
+            
+            if (!input.trim()) {
+                alert('请输入任务输入');
+                return;
+            }
+            
+            try {
+                const res = await fetch(`${API_BASE}/tasks/execute`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        task_type: taskType,
+                        input: input,
+                        group_type: groupType,
+                        use_memory: useMemory
+                    })
+                });
+                
+                if (!res.ok) {
+                    const errorData = await res.json().catch(() => ({error: '请求失败'}));
+                    throw new Error(errorData.error || `HTTP ${res.status}`);
+                }
+                
+                const data = await res.json();
+                
+                if (!data || !data.task) {
+                    throw new Error('响应格式错误: ' + JSON.stringify(data));
+                }
+                
+                currentTaskId = data.task.id;
+                
+                document.getElementById('taskResult').style.display = 'block';
+                document.getElementById('taskResult').textContent = 
+                    `任务ID: ${data.task.id}\n` +
+                    `输出: ${data.task.output || '无'}\n` +
+                    `Token消耗: ${data.task.token_count || 0}\n` +
+                    `使用的记忆: ${data.task.memory_ids || '无'}`;
+                
+                document.getElementById('feedbackCard').style.display = 'block';
+            } catch (error) {
+                alert('执行失败: ' + error.message);
+                console.error('执行任务错误:', error);
+            }
+        }
+        
+        async function submitFeedback() {
+            if (!currentTaskId) {
+                alert('请先执行任务');
+                return;
+            }
+            
+            const feedbackType = document.getElementById('feedbackType').value;
+            const content = document.getElementById('feedbackContent').value;
+            
+            try {
+                const res = await fetch(`${API_BASE}/tasks/feedback`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        task_id: currentTaskId,
+                        feedback_type: feedbackType,
+                        content: content
+                    })
+                });
+                
+                if (!res.ok) {
+                    const errorData = await res.json().catch(() => ({error: '请求失败'}));
+                    throw new Error(errorData.error || `HTTP ${res.status}`);
+                }
+                
+                const data = await res.json();
+                
+                if (!data || !data.feedback) {
+                    throw new Error('响应格式错误: ' + JSON.stringify(data));
+                }
+                
+                if (feedbackType === 'incorrect' && data.feedback.id) {
+                    // 自动触发反思
+                    await reflectAndSave(currentTaskId, data.feedback.id);
+                }
+                
+                alert('反馈提交成功');
+                loadMemories();
+            } catch (error) {
+                alert('提交失败: ' + error.message);
+                console.error('提交反馈错误:', error);
+            }
+        }
+        
+        async function autoJudge() {
+            if (!currentTaskId) {
+                alert('请先执行任务');
+                return;
+            }
+            
+            try {
+                const res = await fetch(`${API_BASE}/tasks/judge`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        task_id: currentTaskId
+                    })
+                });
+                
+                alert('自动判断完成');
+                loadMemories();
+            } catch (error) {
+                alert('判断失败: ' + error.message);
+            }
+        }
+        
+        async function reflectAndSave(taskId, feedbackId) {
+            try {
+                await fetch(`${API_BASE}/tasks/reflect`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        task_id: taskId,
+                        feedback_id: feedbackId
+                    })
+                });
+            } catch (error) {
+                console.error('反思失败:', error);
+            }
+        }
+        
+        async function loadMemories() {
+            try {
+                const res = await fetch(`${API_BASE}/memories`);
+                
+                if (!res.ok) {
+                    const errorData = await res.json().catch(() => ({error: '请求失败'}));
+                    throw new Error(errorData.error || `HTTP ${res.status}`);
+                }
+                
+                const data = await res.json();
+                
+                if (!data || !data.memories) {
+                    throw new Error('响应格式错误: ' + JSON.stringify(data));
+                }
+                
+                const list = document.getElementById('memoriesList');
+                list.innerHTML = '';
+                
+                if (data.memories.length === 0) {
+                    list.innerHTML = '<p style="color: #999; padding: 20px; text-align: center;">暂无记忆</p>';
+                    return;
+                }
+                
+                data.memories.forEach(m => {
+                    const item = document.createElement('div');
+                    item.className = 'memory-item';
+                    item.innerHTML = `
+                        <div class="trigger">触发: ${m.trigger || '无'}</div>
+                        <div class="lesson">经验: ${m.lesson || '无'}</div>
+                        <div class="meta">
+                            置信度: ${m.confidence || 0} | 
+                            版本: ${m.version || 1} | 
+                            使用次数: ${m.use_count || 0} |
+                            适用范围: ${m.apply_to || '通用'}
+                        </div>
+                    `;
+                    list.appendChild(item);
+                });
+            } catch (error) {
+                alert('加载失败: ' + error.message);
+                console.error('加载记忆错误:', error);
+            }
+        }
+        
+        async function loadStats() {
+            try {
+                const res = await fetch(`${API_BASE}/experiments/stats`);
+                
+                if (!res.ok) {
+                    const errorData = await res.json().catch(() => ({error: '请求失败'}));
+                    throw new Error(errorData.error || `HTTP ${res.status}`);
+                }
+                
+                const data = await res.json();
+                
+                if (!data || !data.stats) {
+                    throw new Error('响应格式错误: ' + JSON.stringify(data));
+                }
+                
+                const content = document.getElementById('statsContent');
+                const stats = data.stats;
+                content.innerHTML = `
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="value">${stats.total || 0}</div>
+                            <div class="label">总任务数</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="value">${stats.correct || 0}</div>
+                            <div class="label">正确</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="value">${stats.incorrect || 0}</div>
+                            <div class="label">错误</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="value">${((stats.error_rate || 0) * 100).toFixed(1)}%</div>
+                            <div class="label">错误率</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="value">${stats.avg_tokens || 0}</div>
+                            <div class="label">平均Token</div>
+                        </div>
+                    </div>
+                `;
+            } catch (error) {
+                alert('加载失败: ' + error.message);
+                console.error('加载统计错误:', error);
+            }
+        }
+        
+        async function compareGroups() {
+            try {
+                const res = await fetch(`${API_BASE}/experiments/compare`);
+                
+                if (!res.ok) {
+                    const errorData = await res.json().catch(() => ({error: '请求失败'}));
+                    throw new Error(errorData.error || `HTTP ${res.status}`);
+                }
+                
+                const data = await res.json();
+                
+                if (!data || !data.comparison) {
+                    throw new Error('响应格式错误: ' + JSON.stringify(data));
+                }
+                
+                const content = document.getElementById('comparisonContent');
+                let html = '<table class="comparison-table"><tr><th>指标</th><th>A组</th><th>B组</th><th>C组</th></tr>';
+                
+                const groups = ['A', 'B', 'C'];
+                const metrics = ['total', 'correct', 'incorrect', 'error_rate', 'avg_tokens'];
+                const labels = {'total': '总任务', 'correct': '正确', 'incorrect': '错误', 'error_rate': '错误率', 'avg_tokens': '平均Token'};
+                
+                metrics.forEach(metric => {
+                    html += `<tr><td>${labels[metric]}</td>`;
+                    groups.forEach(group => {
+                        const value = data.comparison[group]?.[metric] || 0;
+                        const display = metric === 'error_rate' ? ((value || 0) * 100).toFixed(1) + '%' : value;
+                        html += `<td>${display}</td>`;
+                    });
+                    html += '</tr>';
+                });
+                
+                html += '</table>';
+                content.innerHTML = html;
+            } catch (error) {
+                alert('对比失败: ' + error.message);
+                console.error('对比组错误:', error);
+            }
+        }
+        
+        async function loadTrend() {
+            try {
+                const res = await fetch(`${API_BASE}/experiments/trend`);
+                
+                if (!res.ok) {
+                    const errorData = await res.json().catch(() => ({error: '请求失败'}));
+                    throw new Error(errorData.error || `HTTP ${res.status}`);
+                }
+                
+                const data = await res.json();
+                
+                if (!data || !data.trend) {
+                    throw new Error('响应格式错误: ' + JSON.stringify(data));
+                }
+                
+                const content = document.getElementById('trendContent');
+                let html = '<table class="comparison-table"><tr><th>日期</th><th>总数</th><th>正确</th><th>错误</th></tr>';
+                
+                if (data.trend.length === 0) {
+                    html += '<tr><td colspan="4" style="text-align: center; color: #999;">暂无数据</td></tr>';
+                } else {
+                    data.trend.forEach(item => {
+                        html += `<tr>
+                            <td>${item.date || '未知'}</td>
+                            <td>${item.total || 0}</td>
+                            <td>${item.correct || 0}</td>
+                            <td>${item.incorrect || 0}</td>
+                        </tr>`;
+                    });
+                }
+                
+                html += '</table>';
+                content.innerHTML = html;
+            } catch (error) {
+                alert('加载失败: ' + error.message);
+                console.error('加载趋势错误:', error);
+            }
+        }
+    </script>
+</body>
+</html>
+
