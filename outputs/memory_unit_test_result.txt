@@ -24,7 +24,7 @@
     memory_evolution_test.go:171: 问题：当前系统只按 confidence + use_count 排序，无法识别哪条是'当前有效'的规则
     memory_evolution_test.go:172: 解决方向：需要引入时间维度、废弃机制、或反向降权逻辑
     memory_evolution_test.go:431: 
-        ✅ 记忆演化测试报告已生成: /Users/jiangyj/work/src/test/mem-test/outputs/memory_evolution_report_20251218_110817.json
+        ✅ 记忆演化测试报告已生成: /Users/jiangyj/work/src/test/mem-test/outputs/memory_evolution_report_20251218_111200.json
 --- PASS: TestMemoryEvolutionWithRuleChanges (0.00s)
 === RUN   TestMemoryRetrievalPriority
     memory_evolution_test.go:180: ===== 测试记忆检索排序逻辑 =====
@@ -48,5 +48,30 @@
     memory_evolution_test.go:265: - 但判错后，不会反向追责并降权这些记忆 ✗
     memory_evolution_test.go:266: - 需要在 CoachService.JudgeLotteryTask 之后，增加降权逻辑
 --- PASS: TestMemoryDeprecationScenario (0.00s)
+=== RUN   TestMemoryEvolution_Integration
+2025/12/18 11:12:00 数据库初始化成功
+    memory_integration_test.go:62: 创建测试 RunID: 3
+    memory_integration_test.go:79: 
+        ===== 第1轮-门槛100-积分90 =====
+    memory_integration_test.go:91: 任务执行完成: ID=610, Output={"allow": true, "reason": "用户积分为90分，满足抽奖条件"}
+    memory_integration_test.go:100: 判题结果: Type=incorrect, Content=判断错误。积分=90时，门槛=100，应该: allow=false，实际输出: allow=true
+
+2025/12/18 11:12:03 [31;1m/Users/jiangyj/work/src/test/mem-test/internal/service/reflection.go:76 [35;1mrecord not found
+[0m[33m[2.313ms] [34;1m[rows:0][0m SELECT * FROM `memories` WHERE `trigger` LIKE '%积分不足%' AND run_id = 3 AND `memories`.`deleted_at` IS NULL ORDER BY version DESC,`memories`.`id` LIMIT 1
+    memory_integration_test.go:111: 生成记忆: ID=5, Trigger='积分不足', Lesson='需要先检查用户积分是否达到抽奖门槛', Version=1
+    memory_integration_test.go:79: 
+        ===== 第2轮-门槛120-积分110 =====
+    memory_integration_test.go:91: 任务执行完成: ID=611, Output={"allow": true, "reason": "用户积分为110，满足抽奖门槛要求"}
+    memory_integration_test.go:100: 判题结果: Type=incorrect, Content=判断错误。积分=110时，门槛=120，应该: allow=false，实际输出: allow=true
+    memory_integration_test.go:111: 生成记忆: ID=6, Trigger='积分不足', Lesson='需要准确比较用户积分与门槛值，积分必须大于等于门槛才能允许操作', Version=2
+    memory_integration_test.go:79: 
+        ===== 第3轮-门槛100-积分105 =====
+    memory_integration_test.go:91: 任务执行完成: ID=612, Output={"allow": true, "reason": "用户积分105分，满足抽奖门槛要求"}
+    memory_integration_test.go:100: 判题结果: Type=correct, Content=判断正确
+    memory_integration_test.go:192: 
+        ✅ 集成测试报告已生成: /Users/jiangyj/work/src/test/mem-test/outputs/memory_integration_test_20251218_111207.json
+    memory_integration_test.go:119: 
+        ✅ 集成测试完成，生成了 2 条记忆
+--- PASS: TestMemoryEvolution_Integration (7.09s)
 PASS
-ok  	mem-test/internal/service	0.431s
+ok  	mem-test/internal/service	7.510s

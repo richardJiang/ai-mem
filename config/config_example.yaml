@@ -17,15 +17,20 @@ redis:
 
 dify:
   # Dify API 配置
-  base_url: http://dify.ickey.com.cn/v1
-  api_key: app-4kBYdLfSFgL2HZ3NTeUYpdpL
+  base_url: http://your-dify-server.com/v1
+  api_key: app-your-api-key-here
   
   # 如果启用 mock 模式，则不调用真实 Dify API（用于测试）
   mock_mode: false
   
   # 指定应用类型（可选值：agent, chat, completion, workflow）
-  app_type: "agent"
+  app_type: "workflow"
   
-  # 自定义端点（如果默认端点不工作）
-  # custom_endpoint: "chat-messages"  # 例如：chat-messages, completion-messages, workflows/run
+  # response_mode: streaming 或 blocking
+  response_mode: "blocking"
+  
+  # workflow 模式下的自定义 key
+  workflow_system_key: "system"
+  workflow_query_key: "query"
+  workflow_output_key: "text"
 

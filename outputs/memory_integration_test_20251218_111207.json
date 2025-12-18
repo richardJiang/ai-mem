@@ -1,0 +1,45 @@
+{
+  "memories": [
+    {
+      "id": 5,
+      "created_at": "2025-12-18T11:12:03.341+08:00",
+      "updated_at": "2025-12-18T11:12:03.341+08:00",
+      "run_id": 3,
+      "trigger": "积分不足",
+      "lesson": "需要先检查用户积分是否达到抽奖门槛",
+      "derived_from": "判断错误。积分=90时，门槛=100，应该: allow=false，实际输出: allow=true",
+      "apply_to": "lottery",
+      "confidence": 0.9,
+      "version": 1,
+      "use_count": 0
+    },
+    {
+      "id": 6,
+      "created_at": "2025-12-18T11:12:06.016+08:00",
+      "updated_at": "2025-12-18T11:12:06.016+08:00",
+      "run_id": 3,
+      "trigger": "积分不足",
+      "lesson": "需要准确比较用户积分与门槛值，积分必须大于等于门槛才能允许操作",
+      "derived_from": "判断错误。积分=110时，门槛=120，应该: allow=false，实际输出: allow=true",
+      "apply_to": "lottery",
+      "confidence": 0.9,
+      "version": 2,
+      "use_count": 0
+    }
+  ],
+  "memories_generated": 2,
+  "notes": [
+    "这是集成测试，使用了真实的数据库和服务",
+    "测试了规则变化场景下的记忆生成和检索",
+    "验证了记忆系统在实际环境中的行为"
+  ],
+  "run_id": 3,
+  "scenarios": [
+    {},
+    {},
+    {}
+  ],
+  "test_name": "MemoryEvolution_RealDatabase",
+  "test_type": "IntegrationTest",
+  "timestamp": "2025-12-18T11:12:07+08:00"
+}

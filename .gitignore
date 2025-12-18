@@ -30,7 +30,12 @@ go.work
 Thumbs.db
 
 # Config (if contains sensitive info)
-# config/config.yaml
+config/config.yaml
+
+# Environment variables
+.env
+.env.local
+.env.*.local
 
 # Logs
 *.log

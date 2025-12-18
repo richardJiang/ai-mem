@@ -1,0 +1,72 @@
+{
+  "analysis": {
+    "current_mechanism": {
+      "run_isolation": "enabled",
+      "sorting_rule": "confidence DESC, use_count DESC",
+      "versioning": "enabled"
+    },
+    "recommendations": [
+      "增加字段：LastUsedAt, LastVerifiedAt, Deprecated, FailureCount",
+      "检索逻辑增强：过滤废弃、时间窗口、时间优先排序",
+      "反向降权逻辑：判错时给使用的记忆降权",
+      "反向验证逻辑：判对时更新 last_verified_at"
+    ],
+    "strengths": [
+      "版本演化：相似 trigger 的记忆会递增 version",
+      "run 隔离：不同实验不会互相污染",
+      "排序机制：按 confidence + use_count 排序有一定合理性",
+      "容错能力：规则变回时旧记忆可能因高 use_count 重新生效"
+    ],
+    "weaknesses": [
+      "缺少时间维度：没有 last_used_at、last_verified_at",
+      "缺少废弃机制：记忆导致错误后不会被降权或标记废弃",
+      "缺少有效期/时间窗口：无法过滤太久远的记忆",
+      "对频繁变化场景支持不足：会累积互相矛盾的记忆"
+    ]
+  },
+  "conclusion": {
+    "not_suitable_for": "生产环境下频繁变化的业务规则（需增强）",
+    "suitable_for": "验证 test-time learning 的 MVP 目标",
+    "verdict": "当前策略方向正确，对偶尔变化够用，对频繁变化需增强"
+  },
+  "memories": [
+    {
+      "id": 11,
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z",
+      "run_id": 0,
+      "trigger": "积分\u003c120",
+      "lesson": "当用户积分低于120时，拒绝抽奖",
+      "derived_from": "",
+      "apply_to": "lottery",
+      "confidence": 0.81,
+      "version": 2,
+      "use_count": 0
+    },
+    {
+      "id": 14,
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z",
+      "run_id": 0,
+      "trigger": "积分\u003c130",
+      "lesson": "当用户积分低于130时，拒绝抽奖",
+      "derived_from": "",
+      "apply_to": "lottery",
+      "confidence": 0.8400000000000001,
+      "version": 5,
+      "use_count": 0
+    }
+  ],
+  "memories_generated": 2,
+  "rule_changes": [
+    100,
+    120,
+    110,
+    100,
+    130,
+    100
+  ],
+  "test_name": "MemoryEvolutionTest",
+  "timestamp": "2025-12-18T11:12:00+08:00",
+  "total_changes": 6
+}
