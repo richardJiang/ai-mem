@@ -2,11 +2,14 @@ package handler
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"mem-test/internal/db"
 	"mem-test/internal/model"
 	"mem-test/internal/service"
+
+	"gorm.io/gorm"
 )
 
 type TaskHandler struct {
@@ -122,6 +125,21 @@ func (h *TaskHandler) AutoJudgeAndReflect(c *gin.Context) {
 		return
 	}
 
+	// 判对：对本次使用到的记忆做“验证时间”更新，帮助规则变更场景下优先检索当前有效规则
+	if feedback.Type == "correct" && task.MemoryIDs != "" {
+		ids := service.ParseMemoryIDs(task.MemoryIDs)
+		if len(ids) > 0 {
+			now := time.Now()
+			_ = db.DB.WithContext(c.Request.Context()).
+				Model(&model.Memory{}).
+				Where("id IN ?", ids).
+				Updates(map[string]interface{}{
+					"last_verified_at": now,
+					"confidence":       gorm.Expr("LEAST(confidence + ?, 1)", 0.01),
+				}).Error
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"feedback": feedback,
 		"message":  "判断正确，无需反思",
@@ -158,4 +176,3 @@ func (h *TaskHandler) ReflectAndSave(c *gin.Context) {
 		"message": "记忆已保存",
 	})
 }
-

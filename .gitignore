@@ -40,3 +40,4 @@ config/config.yaml
 # Logs
 *.log
 
+outputs/

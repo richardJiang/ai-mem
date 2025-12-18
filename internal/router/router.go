@@ -56,7 +56,9 @@ func SetupRouter(cfg *service.ServiceContext) *gin.Engine {
 		{
 			experiments.GET("/stats", experimentHandler.GetExperimentStats)
 			experiments.GET("/compare", experimentHandler.CompareGroups)
+			experiments.GET("/compare-modes", experimentHandler.CompareGroupsByModes)
 			experiments.GET("/trend", experimentHandler.GetErrorTrend)
+			experiments.POST("/reset", experimentHandler.ResetAll)
 			experiments.POST("/run", experimentHandler.RunExperiment)
 		}
 	}

@@ -11,6 +11,8 @@ import (
 
 	"mem-test/internal/db"
 	"mem-test/internal/model"
+
+	"gorm.io/gorm"
 )
 
 type ExperimentRunRequest struct {
@@ -19,6 +21,8 @@ type ExperimentRunRequest struct {
 	Seed         int64    `json:"seed"`
 	Groups       []string `json:"groups"`
 	Action       string   `json:"action"`
+	// 规则变更模式：none/low/high
+	RuleMode string `json:"rule_mode"`
 }
 
 type ExperimentRunResult struct {
@@ -67,6 +71,9 @@ func (r *ExperimentRunner) Run(ctx context.Context, req ExperimentRunRequest) (*
 	if len(req.Groups) == 0 {
 		req.Groups = []string{"A", "B", "C"}
 	}
+	if req.RuleMode == "" {
+		req.RuleMode = "none"
+	}
 
 	groupsJSON, _ := json.Marshal(req.Groups)
 	run := &model.ExperimentRun{
@@ -74,12 +81,15 @@ func (r *ExperimentRunner) Run(ctx context.Context, req ExperimentRunRequest) (*
 		RunsPerGroup: req.RunsPerGroup,
 		Seed:         req.Seed,
 		GroupsJSON:   string(groupsJSON),
+		RuleMode:     req.RuleMode,
 	}
 	if err := db.DB.Create(run).Error; err != nil {
 		return nil, fmt.Errorf("创建实验run失败: %w", err)
 	}
 
 	var lotteryInputs []map[string]interface{}
+	var thresholds []int
+	var ruleVersions []int
 	switch req.TaskType {
 	case "lottery_v2":
 		lotteryInputs = buildLotteryV2Inputs(req.RunsPerGroup, req.Seed, req.Action)
@@ -92,6 +102,7 @@ func (r *ExperimentRunner) Run(ctx context.Context, req ExperimentRunRequest) (*
 				"action": req.Action,
 			})
 		}
+		thresholds, ruleVersions = buildLotteryThresholdSchedule(req.RunsPerGroup, req.RuleMode)
 	}
 
 	result := &ExperimentRunResult{
@@ -115,6 +126,14 @@ func (r *ExperimentRunner) Run(ctx context.Context, req ExperimentRunRequest) (*
 		in := lotteryInputs[i]
 		inputJSON, _ := json.Marshal(in)
 		inputStr := string(inputJSON)
+		threshold := 0
+		ruleVersion := 1
+		if len(thresholds) > 0 {
+			threshold = thresholds[i]
+		}
+		if len(ruleVersions) > 0 {
+			ruleVersion = ruleVersions[i]
+		}
 
 		for _, group := range req.Groups {
 			useMemory := group != "A"
@@ -130,13 +149,28 @@ func (r *ExperimentRunner) Run(ctx context.Context, req ExperimentRunRequest) (*
 			case "lottery_v2":
 				feedback, err = r.coach.JudgeLotteryV2Task(ctx, task)
 			default:
-				feedback, err = r.coach.JudgeLotteryTask(ctx, task)
+				// 规则变更模式下：按当前轮次门槛判题，并把门槛写进反馈，便于记忆演化
+				if threshold > 0 {
+					feedback, err = r.coach.JudgeLotteryTaskWithThreshold(ctx, task, threshold)
+				} else {
+					feedback, err = r.coach.JudgeLotteryTask(ctx, task)
+				}
 			}
 			if err != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("run=%d group=%s round=%d judge failed: %v", run.ID, group, i, err))
 				result.Trend[group] = append(result.Trend[group], 1)
 				continue
 			}
+
+			// 记录实验元数据（round / rule_mode / rule_version / threshold）
+			_ = db.DB.WithContext(ctx).Model(&model.Task{}).
+				Where("id = ?", task.ID).
+				Updates(map[string]interface{}{
+					"round":          i,
+					"rule_mode":      req.RuleMode,
+					"rule_version":   ruleVersion,
+					"rule_threshold": threshold,
+				}).Error
 
 			if feedback.Type == "incorrect" {
 				result.Trend[group] = append(result.Trend[group], 1)
@@ -146,6 +180,20 @@ func (r *ExperimentRunner) Run(ctx context.Context, req ExperimentRunRequest) (*
 					}
 				}
 			} else {
+				// 判对：对本次使用到的记忆做“验证时间”更新，帮助规则变更场景下优先检索当前有效规则
+				if group == "C" && task.MemoryIDs != "" {
+					ids := ParseMemoryIDs(task.MemoryIDs)
+					if len(ids) > 0 {
+						now := time.Now()
+						_ = db.DB.WithContext(ctx).
+							Model(&model.Memory{}).
+							Where("id IN ?", ids).
+							Updates(map[string]interface{}{
+								"last_verified_at": now,
+								"confidence":       gorm.Expr("LEAST(confidence + ?, 1)", 0.01),
+							}).Error
+					}
+				}
 				result.Trend[group] = append(result.Trend[group], 0)
 			}
 		}
@@ -179,6 +227,59 @@ func (r *ExperimentRunner) Run(ctx context.Context, req ExperimentRunRequest) (*
 	_ = db.DB.Save(run).Error
 
 	return result, nil
+}
+
+func buildLotteryThresholdSchedule(n int, mode string) (thresholds []int, versions []int) {
+	thresholds = make([]int, n)
+	versions = make([]int, n)
+
+	base := 100
+	alt := 120
+	if mode == "" {
+		mode = "none"
+	}
+
+	version := 1
+	prev := 0
+	// 低频：1 次变更；高频：变更次数是低频的 5 倍 => 5 次变更（不要每轮都变）
+	highChanges := 5
+	highSegment := 1
+	if mode == "high" && n > 0 {
+		// 5 次变更意味着 6 段，按段切换门槛
+		highSegment = n / (highChanges + 1)
+		if highSegment < 1 {
+			highSegment = 1
+		}
+	}
+	for i := 0; i < n; i++ {
+		t := base
+		switch mode {
+		case "high":
+			// 高频：每段切换一次，整段内保持稳定（避免“每轮都变”）
+			// 变更次数约为 5 次（n 足够大时），即 low 的 5 倍
+			if ((i / highSegment) % 2) == 1 {
+				t = alt
+			}
+		case "low":
+			// 低频：中点切换一次
+			if i >= n/2 {
+				t = alt
+			}
+		default:
+			t = base
+		}
+
+		if i == 0 {
+			prev = t
+		} else if t != prev {
+			version++
+			prev = t
+		}
+
+		thresholds[i] = t
+		versions[i] = version
+	}
+	return thresholds, versions
 }
 
 func buildLotteryPoints(n int, seed int64) []int {

@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"mem-test/internal/db"
 	"mem-test/internal/model"
+
+	"gorm.io/gorm"
 )
 
 type ReflectionService struct {
@@ -26,6 +29,11 @@ func (s *ReflectionService) ReflectAndSaveMemory(ctx context.Context, taskID uin
 	var task model.Task
 	if err := db.DB.First(&task, taskID).Error; err != nil {
 		return nil, fmt.Errorf("获取任务失败: %w", err)
+	}
+
+	// 如果这次是判错反馈，对本次使用到的记忆进行“反向降权/可废弃”
+	if feedback != nil && feedback.Type == "incorrect" {
+		s.penalizeUsedMemories(ctx, &task)
 	}
 
 	// 构建反思提示词
@@ -63,11 +71,14 @@ func (s *ReflectionService) ReflectAndSaveMemory(ctx context.Context, taskID uin
 	memory := s.parseReflectionResult(resp.Answer, feedback)
 	// 绑定 run_id，确保记忆不跨实验污染
 	memory.RunID = task.RunID
+	// 补全归并键（兼容旧数据：默认空串，但新写入必须填充）
+	memory.TriggerKey = normalizeTriggerKey(memory.Trigger)
 
 	// 检查是否已有相似记忆（用于演化）
 	// 注意：trigger是MySQL保留关键字，需要用反引号包裹
 	var existingMemory model.Memory
-	q := db.DB.Model(&model.Memory{}).Where("`trigger` LIKE ?", "%"+memory.Trigger+"%")
+	q := db.DB.Model(&model.Memory{}).
+		Where("trigger_key = ? AND apply_to = ?", memory.TriggerKey, memory.ApplyTo)
 	if task.RunID > 0 {
 		q = q.Where("run_id = ?", task.RunID)
 	}
@@ -93,6 +104,39 @@ func (s *ReflectionService) ReflectAndSaveMemory(ctx context.Context, taskID uin
 	db.DB.Save(feedback)
 
 	return memory, nil
+}
+
+func (s *ReflectionService) penalizeUsedMemories(ctx context.Context, task *model.Task) {
+	ids := ParseMemoryIDs(task.MemoryIDs)
+	if len(ids) == 0 {
+		return
+	}
+	now := time.Now()
+	const failureThreshold = 3
+
+	// 说明：
+	// - 原子更新 failure_count，避免并发丢更新
+	// - 每次判错轻微降低 confidence，避免旧规则长期“霸榜”
+	// - 失败次数达到阈值后标记 deprecated，检索时过滤
+	updates := map[string]interface{}{
+		"failure_count":  gorm.Expr("failure_count + 1"),
+		"last_failed_at": now,
+		"confidence":     gorm.Expr("GREATEST(confidence - ?, 0)", 0.05),
+		"deprecated": gorm.Expr(
+			"CASE WHEN failure_count + 1 >= ? THEN 1 ELSE deprecated END",
+			failureThreshold,
+		),
+		"deprecated_at": gorm.Expr(
+			"CASE WHEN failure_count + 1 >= ? AND (deprecated = 0 OR deprecated IS NULL) THEN ? ELSE deprecated_at END",
+			failureThreshold,
+			now,
+		),
+	}
+
+	_ = db.DB.WithContext(ctx).
+		Model(&model.Memory{}).
+		Where("id IN ?", ids).
+		Updates(updates).Error
 }
 
 func (s *ReflectionService) buildReflectionPrompt(task *model.Task, feedback *model.Feedback) string {
@@ -133,10 +177,10 @@ func (s *ReflectionService) parseReflectionResult(answer string, feedback *model
 	}
 	// 1) 优先按标准 key 解析
 	type reflectionJSON struct {
-		Trigger     string   `json:"trigger"`
-		Lesson      string   `json:"lesson"`
-		ApplyTo     string   `json:"apply_to"`
-		Confidence  *float64 `json:"confidence"`
+		Trigger    string   `json:"trigger"`
+		Lesson     string   `json:"lesson"`
+		ApplyTo    string   `json:"apply_to"`
+		Confidence *float64 `json:"confidence"`
 	}
 	var rj reflectionJSON
 	if err := json.Unmarshal([]byte(raw), &rj); err == nil {

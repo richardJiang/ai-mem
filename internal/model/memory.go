@@ -20,6 +20,11 @@ type Memory struct {
 	// 注意：trigger是MySQL保留关键字，需要在gorm tag中指定列名
 	Trigger string `gorm:"column:trigger;type:varchar(500);not null;index" json:"trigger"`
 
+	// TriggerKey 归一化后的触发条件（用于规则演化归并/版本递增）
+	// 例：积分<100 / 积分<120 归一化为 积分<
+	// 注意：为兼容已有数据，给 default 空串，写入时务必填充
+	TriggerKey string `gorm:"type:varchar(200);not null;default:'';index" json:"trigger_key"`
+
 	// 学到的经验（抽象规则）
 	Lesson string `gorm:"type:text;not null" json:"lesson"`
 
@@ -37,6 +42,24 @@ type Memory struct {
 
 	// 使用次数（用于评估有效性）
 	UseCount int `gorm:"default:0" json:"use_count"`
+
+	// 最近使用时间（被检索并注入 prompt 的时间）
+	LastUsedAt *time.Time `gorm:"index" json:"last_used_at"`
+
+	// 最近验证时间（在判题为 correct 时更新，用于“当前有效规则”排序）
+	LastVerifiedAt *time.Time `gorm:"index" json:"last_verified_at"`
+
+	// 失败次数（当该记忆被使用且最终判错时递增）
+	FailureCount int `gorm:"default:0" json:"failure_count"`
+
+	// 最近失败时间
+	LastFailedAt *time.Time `gorm:"index" json:"last_failed_at"`
+
+	// Deprecated：被判定不再适用（例如规则已变更且多次导致错误）
+	Deprecated bool `gorm:"default:false;index" json:"deprecated"`
+
+	// DeprecatedAt：标记废弃的时间
+	DeprecatedAt *time.Time `gorm:"index" json:"deprecated_at"`
 }
 
 // Task 任务历史表
@@ -69,6 +92,18 @@ type Task struct {
 
 	// 实验组（A/B/C）
 	GroupType string `gorm:"type:varchar(10);index" json:"group_type"`
+
+	// 轮次（用于实验曲线/趋势统计；非实验任务默认为 0）
+	Round int `gorm:"index" json:"round"`
+
+	// 规则变更模式：none/low/high（非实验任务为空）
+	RuleMode string `gorm:"type:varchar(20);index" json:"rule_mode"`
+
+	// 规则版本（从 1 开始；每次规则变更 +1）
+	RuleVersion int `gorm:"index;default:1" json:"rule_version"`
+
+	// 当前轮次使用的规则门槛（仅 lottery 场景用；非实验任务默认为 0）
+	RuleThreshold int `gorm:"index" json:"rule_threshold"`
 }
 
 // Feedback 反馈记录表

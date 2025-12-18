@@ -75,6 +75,11 @@ func (s *CoachService) AutoJudge(ctx context.Context, task *model.Task, expected
 
 // JudgeLotteryTask 判断抽奖任务（示例规则引擎）
 func (s *CoachService) JudgeLotteryTask(ctx context.Context, task *model.Task) (*model.Feedback, error) {
+	return s.JudgeLotteryTaskWithThreshold(ctx, task, 100)
+}
+
+// JudgeLotteryTaskWithThreshold 支持动态门槛（用于规则变更实验）
+func (s *CoachService) JudgeLotteryTaskWithThreshold(ctx context.Context, task *model.Task, threshold int) (*model.Feedback, error) {
 	// 解析输入（简化版，实际应该用JSON）
 	var inputData map[string]interface{}
 	if err := json.Unmarshal([]byte(task.Input), &inputData); err != nil {
@@ -94,8 +99,8 @@ func (s *CoachService) JudgeLotteryTask(ctx context.Context, task *model.Task) (
 	var expectedAllow bool
 	var isCorrect bool
 
-	if points < 100 {
-		expectedOutput = "积分不足，无法抽奖。当前积分不足100，请先充值。"
+	if int(points) < threshold {
+		expectedOutput = fmt.Sprintf("积分不足，无法抽奖。当前积分不足%d，请先充值。", threshold)
 		expectedAllow = false
 	} else {
 		expectedOutput = "可以抽奖。积分充足，允许进行抽奖操作。"
@@ -124,7 +129,7 @@ func (s *CoachService) JudgeLotteryTask(ctx context.Context, task *model.Task) (
 		content = "判断正确"
 	} else {
 		feedbackType = "incorrect"
-		content = fmt.Sprintf("判断错误。积分=%v时，应该: %s", points, expectedOutput)
+		content = fmt.Sprintf("判断错误。积分=%v时，门槛=%d，应该: %s", points, threshold, expectedOutput)
 	}
 
 	return s.SubmitFeedback(ctx, task.ID, feedbackType, content)
@@ -133,13 +138,14 @@ func (s *CoachService) JudgeLotteryTask(ctx context.Context, task *model.Task) (
 // JudgeLotteryV2Task 更复杂的抽奖任务判题（多规则）
 //
 // 输入示例（JSON）：
-// {
-//   "points": 90,
-//   "action": "lottery",
-//   "is_vip": true,
-//   "is_blacklisted": false,
-//   "daily_draws": 0
-// }
+//
+//	{
+//	  "points": 90,
+//	  "action": "lottery",
+//	  "is_vip": true,
+//	  "is_blacklisted": false,
+//	  "daily_draws": 0
+//	}
 //
 // 规则（v2）：
 // - 黑名单：禁止

@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"mem-test/internal/db"
 	"mem-test/internal/model"
+
+	"gorm.io/gorm"
 )
 
 type AgentService struct {
@@ -43,10 +46,21 @@ func (s *AgentService) ExecuteTaskInRun(ctx context.Context, runID uint, taskTyp
 			memories, err := s.retrieveMemories(ctx, runID, taskType, input)
 			if err == nil {
 				relevantMemories = memories
+				var ids []uint
 				for _, m := range memories {
 					memoryIDs = append(memoryIDs, fmt.Sprintf("%d", m.ID))
-					// 更新使用次数
-					db.DB.Model(&m).Update("use_count", m.UseCount+1)
+					ids = append(ids, m.ID)
+				}
+				// 原子更新使用次数 + 最近使用时间（避免并发丢更新）
+				if len(ids) > 0 {
+					now := time.Now()
+					_ = db.DB.WithContext(ctx).
+						Model(&model.Memory{}).
+						Where("id IN ?", ids).
+						Updates(map[string]interface{}{
+							"use_count":    gorm.Expr("use_count + 1"),
+							"last_used_at": now,
+						}).Error
 				}
 			}
 		}
@@ -118,14 +132,14 @@ func (s *AgentService) retrieveMemories(ctx context.Context, runID uint, taskTyp
 
 	// 简单关键词匹配（MVP版本）
 	// 注意：trigger是MySQL保留关键字，需要用反引号包裹
-	q := db.DB.Model(&model.Memory{})
+	q := db.DB.WithContext(ctx).Model(&model.Memory{}).Where("deprecated = 0")
 	if runID > 0 {
 		q = q.Where("run_id = ?", runID)
 	}
-	query := q.Where("apply_to LIKE ? OR `trigger` LIKE ?",
-		"%"+taskType+"%",
-		"%"+input+"%").
-		Order("confidence DESC, use_count DESC").
+	query := q.
+		Where("(apply_to = ? OR apply_to = ?)", taskType, "通用").
+		// 排序核心：优先“最近被验证为正确”的规则，其次最新版本，再考虑置信度/使用次数
+		Order("last_verified_at DESC, version DESC, confidence DESC, use_count DESC, updated_at DESC").
 		Limit(5).
 		Find(&memories)
 

@@ -212,7 +212,7 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>🧠 外挂记忆实验系统</h1>
+            <h1>外挂记忆实验系统</h1>
             <p>最小可验证架构 - 论证外挂记忆的5个特性</p>
         </div>
         
@@ -281,19 +281,30 @@
             <div class="card">
                 <h2>实验统计</h2>
                 <button class="btn btn-primary" onclick="loadStats()">刷新统计</button>
+                <button class="btn btn-danger" style="margin-left:10px;" onclick="resetAll()">重置数据</button>
                 <div id="statsContent"></div>
             </div>
             
             <div class="card">
                 <h2>组间对比</h2>
-                <button class="btn btn-primary" onclick="compareGroups()">对比A/B/C组</button>
+                <button class="btn btn-primary" onclick="compareModes()">对比（高频/低频规则变更）</button>
                 <div id="comparisonContent"></div>
             </div>
             
             <div class="card">
                 <h2>错误趋势</h2>
-                <button class="btn btn-primary" onclick="loadTrend()">查看趋势</button>
-                <div id="trendContent"></div>
+                <div class="form-group" style="max-width: 320px;">
+                    <label>规则变更模式</label>
+                    <select id="trendMode">
+                        <option value="low">低频变更</option>
+                        <option value="high">高频变更</option>
+                        <option value="none">无变更</option>
+                    </select>
+                </div>
+                <button class="btn btn-primary" onclick="loadTrendChart()">查看趋势（图表）</button>
+                <div id="trendContent">
+                    <canvas id="trendChart" width="1100" height="360" style="max-width:100%; background:#fff; border:1px solid #eee; border-radius:6px;"></canvas>
+                </div>
             </div>
         </div>
     </div>
@@ -550,10 +561,271 @@
                 console.error('加载统计错误:', error);
             }
         }
-        
-        async function compareGroups() {
+
+        async function resetAll() {
+            if (!confirm('确认要重置吗？将清空 tasks/feedbacks/memories/experiment_runs 等全部数据')) {
+                return;
+            }
             try {
-                const res = await fetch(`${API_BASE}/experiments/compare`);
+                const res = await fetch(`${API_BASE}/experiments/reset`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({})
+                });
+                if (!res.ok) {
+                    const errorData = await res.json().catch(() => ({error: '请求失败'}));
+                    throw new Error(errorData.error || `HTTP ${res.status}`);
+                }
+                alert('已重置');
+                document.getElementById('statsContent').innerHTML = '';
+                document.getElementById('comparisonContent').innerHTML = '';
+            } catch (error) {
+                alert('重置失败: ' + error.message);
+            }
+        }
+        
+        function renderLineChart(canvas, labels, seriesMap, options = {}) {
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const w = canvas.width;
+            const h = canvas.height;
+            ctx.clearRect(0, 0, w, h);
+
+            const padding = 45;
+            const plotW = w - padding * 2;
+            const plotH = h - padding * 2;
+
+            const colors = options.colors || {
+                A: '#ff4d4f',
+                B: '#faad14',
+                C: '#52c41a'
+            };
+
+            // axes
+            ctx.strokeStyle = '#ddd';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(padding, padding);
+            ctx.lineTo(padding, h - padding);
+            ctx.lineTo(w - padding, h - padding);
+            ctx.stroke();
+
+            // y ticks 0..1
+            ctx.fillStyle = '#666';
+            ctx.font = '12px sans-serif';
+            for (let i = 0; i <= 5; i++) {
+                const y = padding + (plotH * i) / 5;
+                const v = (1 - i / 5).toFixed(1);
+                ctx.fillText(v, 10, y + 4);
+                ctx.strokeStyle = '#f0f0f0';
+                ctx.beginPath();
+                ctx.moveTo(padding, y);
+                ctx.lineTo(w - padding, y);
+                ctx.stroke();
+            }
+
+            const len = labels.length;
+            function xAt(i) {
+                if (len <= 1) return padding;
+                return padding + (plotW * i) / (len - 1);
+            }
+            function yAt(v) {
+                const vv = Math.max(0, Math.min(1, v));
+                return padding + (1 - vv) * plotH;
+            }
+
+            // draw series
+            Object.keys(seriesMap).forEach(key => {
+                const arr = seriesMap[key] || [];
+                ctx.strokeStyle = colors[key] || '#1890ff';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                for (let i = 0; i < len; i++) {
+                    const v = arr[i] ?? arr[arr.length - 1] ?? 0;
+                    const x = xAt(i);
+                    const y = yAt(v);
+                    if (i === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                }
+                ctx.stroke();
+            });
+
+            // legend
+            let lx = w - padding - 220;
+            let ly = padding - 25;
+            ctx.fillStyle = '#333';
+            ctx.font = '13px sans-serif';
+            ctx.fillText(options.title || '', padding, 20);
+
+            Object.keys(seriesMap).forEach((key, idx) => {
+                const x = lx + idx * 70;
+                const y = ly;
+                ctx.fillStyle = colors[key] || '#1890ff';
+                ctx.fillRect(x, y, 12, 3);
+                ctx.fillStyle = '#333';
+                ctx.fillText(key + '组', x + 16, y + 5);
+            });
+        }
+
+        function renderBarChart(canvas, labels, values, options = {}) {
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const w = canvas.width;
+            const h = canvas.height;
+            ctx.clearRect(0, 0, w, h);
+
+            const padding = 45;
+            const plotW = w - padding * 2;
+            const plotH = h - padding * 2;
+
+            // axes
+            ctx.strokeStyle = '#ddd';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(padding, padding);
+            ctx.lineTo(padding, h - padding);
+            ctx.lineTo(w - padding, h - padding);
+            ctx.stroke();
+
+            // y ticks (0..max)
+            const maxV = Math.max(1, ...(values || [0]));
+            ctx.fillStyle = '#666';
+            ctx.font = '12px sans-serif';
+            for (let i = 0; i <= 4; i++) {
+                const y = padding + (plotH * i) / 4;
+                const v = Math.round(maxV * (1 - i / 4));
+                ctx.fillText(String(v), 10, y + 4);
+                ctx.strokeStyle = '#f0f0f0';
+                ctx.beginPath();
+                ctx.moveTo(padding, y);
+                ctx.lineTo(w - padding, y);
+                ctx.stroke();
+            }
+
+            const n = labels.length;
+            if (n === 0) return;
+            const barW = Math.max(2, plotW / n * 0.7);
+            const gap = plotW / n;
+            const color = options.color || '#1890ff';
+            const markers = Array.isArray(options.markers) ? options.markers : [];
+            const markerLabel = options.markerLabel || '规则变更';
+            const markerThresholds = Array.isArray(options.markerThresholds) ? options.markerThresholds : [];
+
+            function xAt(i) {
+                return padding + i * gap + (gap - barW) / 2;
+            }
+            function yAt(v) {
+                const vv = Math.max(0, v);
+                return padding + (1 - vv / maxV) * plotH;
+            }
+
+            ctx.fillStyle = color;
+            for (let i = 0; i < n; i++) {
+                const v = values[i] ?? 0;
+                const x = xAt(i);
+                const y = yAt(v);
+                const bh = (h - padding) - y;
+                ctx.fillRect(x, y, barW, bh);
+            }
+
+            // markers: draw vertical lines at rule change points
+            if (markers.length > 0) {
+                ctx.strokeStyle = options.markerColor || '#ff4d4f';
+                ctx.lineWidth = 2;
+                ctx.fillStyle = options.markerTextColor || '#ff4d4f';
+                ctx.font = '12px sans-serif';
+                markers.forEach((cp) => {
+                    if (cp == null) return;
+                    const i = Number(cp);
+                    if (!Number.isFinite(i) || i < 0 || i >= n) return;
+                    const x = xAt(i) + barW / 2;
+                    ctx.beginPath();
+                    ctx.moveTo(x, padding);
+                    ctx.lineTo(x, h - padding);
+                    ctx.stroke();
+
+                    const th = markerThresholds[i];
+                    const text = th ? `${markerLabel}→${th}` : markerLabel;
+                    ctx.fillText(text, Math.min(x + 4, w - padding - 140), padding + 14);
+                });
+            }
+
+            ctx.fillStyle = '#333';
+            ctx.font = '13px sans-serif';
+            ctx.fillText(options.title || '', padding, 20);
+        }
+
+        function renderModeBlock(modeLabel, modeData) {
+            if (!modeData) {
+                return `<p style="color:#999;">${modeLabel}：暂无数据（请先跑一轮该模式实验）</p>`;
+            }
+            const overall = modeData.overall || {};
+            const rounds = modeData.rounds || 0;
+            const curves = modeData.curves || {};
+            const trial = modeData.trial_and_error || {};
+            const firstErr = modeData.first_error_round || {};
+            const memStart = modeData.memory_change_start_round ?? -1;
+            const memChanges = modeData.memory_changes_per_round || [];
+            const labels = Array.from({length: rounds}, (_, i) => i + 1);
+
+            const tableRows = ['total','correct','incorrect','error_rate'].map(k => {
+                const label = {total:'总任务', correct:'正确', incorrect:'错误', error_rate:'错误率'}[k];
+                const A = overall.A?.[k] ?? 0;
+                const B = overall.B?.[k] ?? 0;
+                const C = overall.C?.[k] ?? 0;
+                const fmt = v => k === 'error_rate' ? ((v||0)*100).toFixed(1)+'%' : v;
+                return `<tr><td>${label}</td><td>${fmt(A)}</td><td>${fmt(B)}</td><td>${fmt(C)}</td></tr>`;
+            }).join('');
+
+            const trialText = (trial.change_points && trial.change_points.length)
+                ? `变更点: ${trial.change_points.join(', ')} | 试错次数: ${trial.attempts.join(', ')} | 平均: ${Number(trial.avg_attempts||0).toFixed(2)} | 最大: ${trial.max_attempts||0}`
+                : '无变更点或暂无数据';
+
+            const chartId = `chart_${modeData.rule_mode}`;
+            const barId = `bar_${modeData.rule_mode}`;
+            setTimeout(() => {
+                const canvas = document.getElementById(chartId);
+                const series = {
+                    A: curves.A?.cumulative_accuracy || [],
+                    B: curves.B?.cumulative_accuracy || [],
+                    C: curves.C?.cumulative_accuracy || []
+                };
+                renderLineChart(canvas, labels, series, {title: `${modeLabel}：累计正确率（随轮次）`});
+
+                const bar = document.getElementById(barId);
+                renderBarChart(bar, labels, memChanges, {
+                    title: `${modeLabel}：C组记忆变更柱状图（每轮判错次数）`,
+                    color: '#722ed1',
+                    markers: trial.change_points || [],
+                    markerLabel: '规则变更',
+                    markerThresholds: modeData.thresholds || []
+                });
+            }, 0);
+
+            const fe = g => (firstErr[g] ?? -1) >= 0 ? `第 ${firstErr[g] + 1} 轮` : '无错误';
+            const memStartText = memStart >= 0 ? `第 ${memStart + 1} 轮` : '未触发';
+
+            return `
+                <div style="margin-top:10px;">
+                    <div style="color:#666; margin:6px 0;">run_id: ${modeData.run_id || '-'}</div>
+                    <div style="color:#333; margin:6px 0;">
+                        <b>首次出错轮次</b>：A组 ${fe('A')}｜B组 ${fe('B')}｜C组 ${fe('C')}
+                        <span style="margin-left:12px;"><b>记忆开始变更</b>：${memStartText}</span>
+                    </div>
+                    <table class="comparison-table">
+                        <tr><th>指标</th><th>A组</th><th>B组</th><th>C组</th></tr>
+                        ${tableRows}
+                    </table>
+                    <div style="margin:10px 0; color:#333;"><b>C组调整记忆试错次数</b>: ${trialText}</div>
+                    <canvas id="${chartId}" width="1100" height="320" style="max-width:100%; background:#fff; border:1px solid #eee; border-radius:6px;"></canvas>
+                    <canvas id="${barId}" width="1100" height="260" style="max-width:100%; background:#fff; border:1px solid #eee; border-radius:6px; margin-top:10px;"></canvas>
+                </div>
+            `;
+        }
+
+        async function compareModes() {
+            try {
+                const res = await fetch(`${API_BASE}/experiments/compare-modes`);
                 
                 if (!res.ok) {
                     const errorData = await res.json().catch(() => ({error: '请求失败'}));
@@ -562,38 +834,29 @@
                 
                 const data = await res.json();
                 
-                if (!data || !data.comparison) {
+                if (!data || !data.modes) {
                     throw new Error('响应格式错误: ' + JSON.stringify(data));
                 }
                 
                 const content = document.getElementById('comparisonContent');
-                let html = '<table class="comparison-table"><tr><th>指标</th><th>A组</th><th>B组</th><th>C组</th></tr>';
-                
-                const groups = ['A', 'B', 'C'];
-                const metrics = ['total', 'correct', 'incorrect', 'error_rate', 'avg_tokens'];
-                const labels = {'total': '总任务', 'correct': '正确', 'incorrect': '错误', 'error_rate': '错误率', 'avg_tokens': '平均Token'};
-                
-                metrics.forEach(metric => {
-                    html += `<tr><td>${labels[metric]}</td>`;
-                    groups.forEach(group => {
-                        const value = data.comparison[group]?.[metric] || 0;
-                        const display = metric === 'error_rate' ? ((value || 0) * 100).toFixed(1) + '%' : value;
-                        html += `<td>${display}</td>`;
-                    });
-                    html += '</tr>';
-                });
-                
-                html += '</table>';
-                content.innerHTML = html;
+                const low = data.modes.low;
+                const high = data.modes.high;
+                content.innerHTML =
+                    `<h3 style="margin-top:0;">低频变更</h3>` +
+                    renderModeBlock('低频变更', low) +
+                    `<hr style="border:none;border-top:1px solid #eee; margin:18px 0;">` +
+                    `<h3 style="margin-top:0;">高频变更</h3>` +
+                    renderModeBlock('高频变更', high);
             } catch (error) {
                 alert('对比失败: ' + error.message);
                 console.error('对比组错误:', error);
             }
         }
         
-        async function loadTrend() {
+        async function loadTrendChart() {
             try {
-                const res = await fetch(`${API_BASE}/experiments/trend`);
+                const mode = document.getElementById('trendMode').value;
+                const res = await fetch(`${API_BASE}/experiments/trend?mode=${encodeURIComponent(mode)}`);
                 
                 if (!res.ok) {
                     const errorData = await res.json().catch(() => ({error: '请求失败'}));
@@ -602,28 +865,19 @@
                 
                 const data = await res.json();
                 
-                if (!data || !data.trend) {
+                if (!data || !data.curves) {
                     throw new Error('响应格式错误: ' + JSON.stringify(data));
                 }
                 
-                const content = document.getElementById('trendContent');
-                let html = '<table class="comparison-table"><tr><th>日期</th><th>总数</th><th>正确</th><th>错误</th></tr>';
-                
-                if (data.trend.length === 0) {
-                    html += '<tr><td colspan="4" style="text-align: center; color: #999;">暂无数据</td></tr>';
-                } else {
-                    data.trend.forEach(item => {
-                        html += `<tr>
-                            <td>${item.date || '未知'}</td>
-                            <td>${item.total || 0}</td>
-                            <td>${item.correct || 0}</td>
-                            <td>${item.incorrect || 0}</td>
-                        </tr>`;
-                    });
-                }
-                
-                html += '</table>';
-                content.innerHTML = html;
+                const rounds = data.rounds || 0;
+                const labels = Array.from({length: rounds}, (_, i) => i + 1);
+                const canvas = document.getElementById('trendChart');
+                const series = {
+                    A: data.curves.A?.cumulative_error || [],
+                    B: data.curves.B?.cumulative_error || [],
+                    C: data.curves.C?.cumulative_error || []
+                };
+                renderLineChart(canvas, labels, series, {title: `${mode}：累计错误率（随轮次）`});
             } catch (error) {
                 alert('加载失败: ' + error.message);
                 console.error('加载趋势错误:', error);
