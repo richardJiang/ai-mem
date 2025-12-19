@@ -230,6 +230,7 @@
                     <label>任务类型</label>
                     <select id="taskType">
                         <option value="lottery">抽奖判断</option>
+                        <option value="lottery_multi">抽奖判断（多积分/隐性规则）</option>
                     </select>
                 </div>
                 <div class="form-group">
@@ -287,6 +288,13 @@
             
             <div class="card">
                 <h2>组间对比</h2>
+                <div class="form-group" style="max-width: 320px;">
+                    <label>任务类型</label>
+                    <select id="experimentTaskType">
+                        <option value="lottery">lottery（单 points）</option>
+                        <option value="lottery_multi">lottery_multi（多积分/隐性规则）</option>
+                    </select>
+                </div>
                 <button class="btn btn-primary" onclick="compareModes()">对比（高频/低频规则变更）</button>
                 <div id="comparisonContent"></div>
             </div>
@@ -389,6 +397,18 @@
                 console.error('执行任务错误:', error);
             }
         }
+
+        // 输入模板快捷：切换任务类型时给出更贴近生产的多积分示例
+        document.getElementById('taskType').addEventListener('change', () => {
+            const taskType = document.getElementById('taskType').value;
+            const ta = document.getElementById('taskInput');
+            if (!ta) return;
+            if (taskType === 'lottery_multi') {
+                ta.placeholder = '{"action":"lottery","points_available":60,"points_bonus":80,"points_locked":20,"points_expiring":10,"expiring_days":1,"points_penalty":5}';
+            } else {
+                ta.placeholder = '{"points": 50, "action": "lottery"}';
+            }
+        });
         
         async function submitFeedback() {
             if (!currentTaskId) {
@@ -598,7 +618,8 @@
             const colors = options.colors || {
                 A: '#ff4d4f',
                 B: '#faad14',
-                C: '#52c41a'
+                C: '#52c41a',
+                D: '#1890ff'
             };
 
             // axes
@@ -768,13 +789,15 @@
             const memChanges = modeData.memory_changes_per_round || [];
             const labels = Array.from({length: rounds}, (_, i) => i + 1);
 
-            const tableRows = ['total','correct','incorrect','error_rate'].map(k => {
-                const label = {total:'总任务', correct:'正确', incorrect:'错误', error_rate:'错误率'}[k];
+            // 后端 GroupStats 字段：n/correct/incorrect/error_rate
+            const tableRows = ['n','correct','incorrect','error_rate'].map(k => {
+                const label = {n:'总任务', correct:'正确', incorrect:'错误', error_rate:'错误率'}[k];
                 const A = overall.A?.[k] ?? 0;
                 const B = overall.B?.[k] ?? 0;
                 const C = overall.C?.[k] ?? 0;
+                const D = overall.D?.[k] ?? 0;
                 const fmt = v => k === 'error_rate' ? ((v||0)*100).toFixed(1)+'%' : v;
-                return `<tr><td>${label}</td><td>${fmt(A)}</td><td>${fmt(B)}</td><td>${fmt(C)}</td></tr>`;
+                return `<tr><td>${label}</td><td>${fmt(A)}</td><td>${fmt(B)}</td><td>${fmt(C)}</td><td>${fmt(D)}</td></tr>`;
             }).join('');
 
             const trialText = (trial.change_points && trial.change_points.length)
@@ -788,7 +811,8 @@
                 const series = {
                     A: curves.A?.cumulative_accuracy || [],
                     B: curves.B?.cumulative_accuracy || [],
-                    C: curves.C?.cumulative_accuracy || []
+                    C: curves.C?.cumulative_accuracy || [],
+                    D: curves.D?.cumulative_accuracy || []
                 };
                 renderLineChart(canvas, labels, series, {title: `${modeLabel}：累计正确率（随轮次）`});
 
@@ -809,11 +833,11 @@
                 <div style="margin-top:10px;">
                     <div style="color:#666; margin:6px 0;">run_id: ${modeData.run_id || '-'}</div>
                     <div style="color:#333; margin:6px 0;">
-                        <b>首次出错轮次</b>：A组 ${fe('A')}｜B组 ${fe('B')}｜C组 ${fe('C')}
+                        <b>首次出错轮次</b>：A组 ${fe('A')}｜B组 ${fe('B')}｜C组 ${fe('C')}｜D组 ${fe('D')}
                         <span style="margin-left:12px;"><b>记忆开始变更</b>：${memStartText}</span>
                     </div>
                     <table class="comparison-table">
-                        <tr><th>指标</th><th>A组</th><th>B组</th><th>C组</th></tr>
+                        <tr><th>指标</th><th>A组</th><th>B组</th><th>C组</th><th>D组</th></tr>
                         ${tableRows}
                     </table>
                     <div style="margin:10px 0; color:#333;"><b>C组调整记忆试错次数</b>: ${trialText}</div>
@@ -825,7 +849,8 @@
 
         async function compareModes() {
             try {
-                const res = await fetch(`${API_BASE}/experiments/compare-modes`);
+                const taskType = document.getElementById('experimentTaskType')?.value || 'lottery';
+                const res = await fetch(`${API_BASE}/experiments/compare-modes?task_type=${encodeURIComponent(taskType)}`);
                 
                 if (!res.ok) {
                     const errorData = await res.json().catch(() => ({error: '请求失败'}));
@@ -856,7 +881,8 @@
         async function loadTrendChart() {
             try {
                 const mode = document.getElementById('trendMode').value;
-                const res = await fetch(`${API_BASE}/experiments/trend?mode=${encodeURIComponent(mode)}`);
+                const taskType = document.getElementById('experimentTaskType')?.value || 'lottery';
+                const res = await fetch(`${API_BASE}/experiments/trend?mode=${encodeURIComponent(mode)}&task_type=${encodeURIComponent(taskType)}`);
                 
                 if (!res.ok) {
                     const errorData = await res.json().catch(() => ({error: '请求失败'}));
@@ -875,7 +901,8 @@
                 const series = {
                     A: data.curves.A?.cumulative_error || [],
                     B: data.curves.B?.cumulative_error || [],
-                    C: data.curves.C?.cumulative_error || []
+                    C: data.curves.C?.cumulative_error || [],
+                    D: data.curves.D?.cumulative_error || []
                 };
                 renderLineChart(canvas, labels, series, {title: `${mode}：累计错误率（随轮次）`});
             } catch (error) {

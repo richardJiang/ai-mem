@@ -41,7 +41,7 @@ func TestMemoryEvolution_Integration(t *testing.T) {
 		cfg.Dify.WorkflowOutputKey,
 	)
 
-	agentService := NewAgentService(difyClient)
+	agentService := NewAgentService(difyClient, nil, "")
 	coachService := NewCoachService()
 	reflectionService := NewReflectionService(difyClient)
 

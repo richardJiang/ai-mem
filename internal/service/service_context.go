@@ -20,9 +20,10 @@ func NewServiceContext(cfg *config.Config) *ServiceContext {
 		cfg.Dify.WorkflowQueryKey,
 		cfg.Dify.WorkflowOutputKey,
 	)
+	memosClient := NewMemOSClient(cfg.MemOS.BaseURL, cfg.MemOS.TopK)
 
 	return &ServiceContext{
-		AgentService:      NewAgentService(difyClient),
+		AgentService:      NewAgentService(difyClient, memosClient, cfg.MemOS.UserPrefix),
 		CoachService:      NewCoachService(),
 		ReflectionService: NewReflectionService(difyClient),
 	}

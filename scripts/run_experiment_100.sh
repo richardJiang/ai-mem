@@ -7,12 +7,20 @@ SEED=${SEED:-0}
 TASK_TYPE=${TASK_TYPE:-lottery}
 ACTION=${ACTION:-lottery}
 RULE_MODE=${RULE_MODE:-none}
+# 注意：bash 内置变量 GROUPS 表示当前用户的组ID（数字），不要复用这个名字！
+# 用 EXP_GROUPS 覆盖默认 groups（JSON array 字符串），例如：'["A","B","C"]'
+EXP_GROUPS=${EXP_GROUPS:-}
+
+groups_json='["A","B","C"]'
+if [[ -n "${EXP_GROUPS}" ]]; then
+  groups_json="${EXP_GROUPS}"
+fi
 
 body=$(cat <<JSON
 {
   "task_type": "${TASK_TYPE}",
   "runs_per_group": ${RUNS},
-  "groups": ["A","B","C"],
+  "groups": ${groups_json},
   "seed": ${SEED},
   "action": "${ACTION}",
   "rule_mode": "${RULE_MODE}"

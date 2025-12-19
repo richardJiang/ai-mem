@@ -71,6 +71,8 @@ func (s *ReflectionService) ReflectAndSaveMemory(ctx context.Context, taskID uin
 	memory := s.parseReflectionResult(resp.Answer, feedback)
 	// 绑定 run_id，确保记忆不跨实验污染
 	memory.RunID = task.RunID
+	// 生产级：ApplyTo 不信任模型输出，强制绑定到当前任务类型，避免像 lottery_multi 这类场景写成 lottery 导致完全检索不到
+	memory.ApplyTo = task.TaskType
 	// 补全归并键（兼容旧数据：默认空串，但新写入必须填充）
 	memory.TriggerKey = normalizeTriggerKey(memory.Trigger)
 
@@ -152,7 +154,7 @@ func (s *ReflectionService) buildReflectionPrompt(task *model.Task, feedback *mo
 	prompt.WriteString("请只输出严格 JSON（不要 Markdown、不要解释、不要多余文本），字段名固定如下：\n")
 	prompt.WriteString("1. trigger: 触发条件（简短关键词）\n")
 	prompt.WriteString("2. lesson: 学到的经验（可复用规则）\n")
-	prompt.WriteString("3. apply_to: 适用范围（任务类型，例如 lottery）\n")
+	prompt.WriteString("3. apply_to: 适用范围（任务类型，必须与上面的任务类型一致，例如 lottery 或 lottery_multi）\n")
 	prompt.WriteString("4. confidence: 置信度（0~1 小数）\n\n")
 	prompt.WriteString("输出格式示例：\n")
 	prompt.WriteString(`{"trigger": "...", "lesson": "...", "apply_to": "...", "confidence": 0.8}`)

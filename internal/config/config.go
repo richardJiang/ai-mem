@@ -12,6 +12,7 @@ type Config struct {
 	Database DatabaseConfig `yaml:"database"`
 	Redis    RedisConfig    `yaml:"redis"`
 	Dify     DifyConfig     `yaml:"dify"`
+	MemOS    MemOSConfig    `yaml:"memos"`
 }
 
 type ServerConfig struct {
@@ -46,6 +47,15 @@ type DifyConfig struct {
 	WorkflowQueryKey  string `yaml:"workflow_query_key"`
 	// Workflow 输出字段名（从 outputs 中取该 key 作为 answer；为空则自动猜测）
 	WorkflowOutputKey string `yaml:"workflow_output_key"`
+}
+
+type MemOSConfig struct {
+	// MemOS Product API base_url，例如 http://localhost:8000
+	BaseURL string `yaml:"base_url"`
+	// 选填：给 MemOS 注册/隔离用的 user_id 前缀
+	UserPrefix string `yaml:"user_prefix"`
+	// 选填：search top_k
+	TopK int `yaml:"top_k"`
 }
 
 func LoadConfig(path string) (*Config, error) {

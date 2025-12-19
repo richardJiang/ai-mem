@@ -72,6 +72,10 @@ func (h *ExperimentHandler) GetErrorTrend(c *gin.Context) {
 	if mode == "" {
 		mode = "none"
 	}
+	taskType := strings.TrimSpace(c.Query("task_type"))
+	if taskType == "" {
+		taskType = "lottery"
+	}
 	runIDStr := strings.TrimSpace(c.Query("run_id"))
 	var run model.ExperimentRun
 	q := db.DB.Model(&model.ExperimentRun{})
@@ -80,7 +84,7 @@ func (h *ExperimentHandler) GetErrorTrend(c *gin.Context) {
 			q = q.Where("id = ?", uint(rid))
 		}
 	} else {
-		q = q.Where("rule_mode = ?", mode).Order("id DESC")
+		q = q.Where("rule_mode = ? AND task_type = ?", mode, taskType).Order("id DESC")
 	}
 	if err := q.First(&run).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "未找到对应实验 run"})
@@ -102,7 +106,7 @@ func (h *ExperimentHandler) GetErrorTrend(c *gin.Context) {
 			continue
 		}
 		flags, ths, _ := service.ExtractRoundFlags(tasks, rounds)
-		if thresholds == nil || len(thresholds) == 0 {
+		if len(thresholds) == 0 {
 			thresholds = ths
 		}
 		curves[g] = service.BuildCumulativeCurves(flags, rounds)
@@ -146,11 +150,15 @@ func (h *ExperimentHandler) RunExperiment(c *gin.Context) {
 // CompareGroupsByModes 区分高频/低频规则变更两种模式，输出组间对比 + 正确率变化曲线 + 试错次数
 func (h *ExperimentHandler) CompareGroupsByModes(c *gin.Context) {
 	modes := []string{"low", "high"}
+	taskType := strings.TrimSpace(c.Query("task_type"))
+	if taskType == "" {
+		taskType = "lottery"
+	}
 	resp := map[string]interface{}{}
 
 	for _, mode := range modes {
 		var run model.ExperimentRun
-		if err := db.DB.Where("rule_mode = ?", mode).Order("id DESC").First(&run).Error; err != nil {
+		if err := db.DB.Where("rule_mode = ? AND task_type = ?", mode, taskType).Order("id DESC").First(&run).Error; err != nil {
 			continue
 		}
 		rounds := run.RunsPerGroup

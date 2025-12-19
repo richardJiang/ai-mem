@@ -135,6 +135,120 @@ func (s *CoachService) JudgeLotteryTaskWithThreshold(ctx context.Context, task *
 	return s.SubmitFeedback(ctx, task.ID, feedbackType, content)
 }
 
+// JudgeLotteryMultiPointsTask 生产模拟：多积分字段 + 多条隐性规则（不在 prompt 中显式给出）
+func (s *CoachService) JudgeLotteryMultiPointsTask(ctx context.Context, task *model.Task) (*model.Feedback, error) {
+	return s.JudgeLotteryMultiPointsTaskWithThreshold(ctx, task, 100)
+}
+
+// JudgeLotteryMultiPointsTaskWithThreshold 支持动态门槛（用于规则变更实验）
+func (s *CoachService) JudgeLotteryMultiPointsTaskWithThreshold(ctx context.Context, task *model.Task, threshold int) (*model.Feedback, error) {
+	var inputData map[string]interface{}
+	if err := json.Unmarshal([]byte(task.Input), &inputData); err != nil {
+		inputData = map[string]interface{}{}
+	}
+
+	available := int(getFloat(inputData, "points_available"))
+	bonus := int(getFloat(inputData, "points_bonus"))
+	locked := int(getFloat(inputData, "points_locked"))
+	expiring := int(getFloat(inputData, "points_expiring"))
+	expDays := int(getFloat(inputData, "expiring_days"))
+	penalty := int(getFloat(inputData, "points_penalty"))
+
+	effective, explain := computeEffectivePoints(threshold, available, bonus, locked, expiring, expDays, penalty)
+	expectedAllow := effective >= threshold
+
+	allow, err := parseLotteryAllow(task.Output)
+	isCorrect := false
+	if err == nil && allow != nil {
+		isCorrect = (*allow == expectedAllow)
+	}
+
+	task.IsCorrect = &isCorrect
+	db.DB.Save(task)
+
+	feedbackType := "correct"
+	content := "判断正确"
+	if !isCorrect {
+		feedbackType = "incorrect"
+		content = fmt.Sprintf(
+			"判断错误。门槛=%d，有效积分=%d（%s）。输入: available=%d bonus=%d locked=%d expiring=%d expiring_days=%d penalty=%d，应该: allow=%v",
+			threshold, effective, explain, available, bonus, locked, expiring, expDays, penalty, expectedAllow,
+		)
+	}
+
+	return s.SubmitFeedback(ctx, task.ID, feedbackType, content)
+}
+
+func getFloat(m map[string]interface{}, key string) float64 {
+	v, ok := m[key]
+	if !ok {
+		return 0
+	}
+	switch vv := v.(type) {
+	case float64:
+		return vv
+	case int:
+		return float64(vv)
+	case int64:
+		return float64(vv)
+	case string:
+		// 简化：不解析字符串
+		return 0
+	default:
+		return 0
+	}
+}
+
+// computeEffectivePoints 多条隐性规则（示例，可按你的生产规则继续加复杂度）
+//
+// 隐性规则：
+// 1) locked 不计入
+// 2) bonus 仅按 50% 折算，且最多计入门槛的 20%
+// 3) expiring 仅在 expiring_days<=1 时计入（按 100%）
+// 4) penalty 直接扣减
+// 5) effective 最小为 0
+func computeEffectivePoints(threshold, available, bonus, locked, expiring, expDays, penalty int) (effective int, explain string) {
+	if threshold <= 0 {
+		threshold = 100
+	}
+	if available < 0 {
+		available = 0
+	}
+	if bonus < 0 {
+		bonus = 0
+	}
+	if locked < 0 {
+		locked = 0
+	}
+	if expiring < 0 {
+		expiring = 0
+	}
+	if penalty < 0 {
+		penalty = 0
+	}
+
+	// bonus 折算 + cap
+	bonusEff := bonus / 2
+	cap := int(float64(threshold) * 0.2)
+	if bonusEff > cap {
+		bonusEff = cap
+	}
+
+	expEff := 0
+	if expDays <= 1 {
+		expEff = expiring
+	}
+
+	// locked 不计入，只用于 explain
+	effective = available + bonusEff + expEff - penalty
+	if effective < 0 {
+		effective = 0
+	}
+
+	explain = fmt.Sprintf("available(%d)+bonus50%%cap(%d)+expiring(%d)-penalty(%d), locked(%d)不计", available, bonusEff, expEff, penalty, locked)
+	return effective, explain
+}
+
 // JudgeLotteryV2Task 更复杂的抽奖任务判题（多规则）
 //
 // 输入示例（JSON）：

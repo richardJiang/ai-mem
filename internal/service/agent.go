@@ -13,12 +13,16 @@ import (
 )
 
 type AgentService struct {
-	difyClient *DifyClient
+	difyClient    *DifyClient
+	memosClient   *MemOSClient
+	memosUserPref string
 }
 
-func NewAgentService(difyClient *DifyClient) *AgentService {
+func NewAgentService(difyClient *DifyClient, memosClient *MemOSClient, memosUserPref string) *AgentService {
 	return &AgentService{
-		difyClient: difyClient,
+		difyClient:    difyClient,
+		memosClient:   memosClient,
+		memosUserPref: memosUserPref,
 	}
 }
 
@@ -201,6 +205,11 @@ func (s *AgentService) buildPrompt(taskType, input string, memories []model.Memo
 	switch taskType {
 	case "lottery":
 		prompt.WriteString("请判断用户是否可以抽奖，并给出原因。需要考虑积分是否充足。\n")
+		prompt.WriteString("请只输出严格 JSON（不要 Markdown、不要多余文本）：\n")
+		prompt.WriteString(`{"allow": true, "reason": "..."}` + "\n")
+	case "lottery_multi":
+		prompt.WriteString("请判断用户是否可以抽奖，并给出原因。\n")
+		prompt.WriteString("注意：输入包含多种积分字段，可能只有部分积分可计入（规则未显式给出）。请根据输入做出判断。\n")
 		prompt.WriteString("请只输出严格 JSON（不要 Markdown、不要多余文本）：\n")
 		prompt.WriteString(`{"allow": true, "reason": "..."}` + "\n")
 	case "lottery_v2":

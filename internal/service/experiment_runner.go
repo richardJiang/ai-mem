@@ -75,6 +75,18 @@ func (r *ExperimentRunner) Run(ctx context.Context, req ExperimentRunRequest) (*
 		req.RuleMode = "none"
 	}
 
+	// 移除不适配本模拟机制的实验组（D 组）：
+	// - 该项目的“学习链路”与统计口径默认围绕 A/B/C 设计
+	// - D 组（外部 MemOS）会引入不可控的检索/写入机制差异，容易破坏可归因性
+	filteredGroups := make([]string, 0, len(req.Groups))
+	for _, g := range req.Groups {
+		if g == "D" {
+			continue
+		}
+		filteredGroups = append(filteredGroups, g)
+	}
+	req.Groups = filteredGroups
+
 	groupsJSON, _ := json.Marshal(req.Groups)
 	run := &model.ExperimentRun{
 		TaskType:     req.TaskType,
@@ -93,6 +105,9 @@ func (r *ExperimentRunner) Run(ctx context.Context, req ExperimentRunRequest) (*
 	switch req.TaskType {
 	case "lottery_v2":
 		lotteryInputs = buildLotteryV2Inputs(req.RunsPerGroup, req.Seed, req.Action)
+	case "lottery_multi":
+		lotteryInputs = buildLotteryMultiPointsInputs(req.RunsPerGroup, req.Seed, req.Action)
+		thresholds, ruleVersions = buildLotteryThresholdSchedule(req.RunsPerGroup, req.RuleMode)
 	default:
 		pointsSeq := buildLotteryPoints(req.RunsPerGroup, req.Seed)
 		lotteryInputs = make([]map[string]interface{}, 0, len(pointsSeq))
@@ -148,6 +163,12 @@ func (r *ExperimentRunner) Run(ctx context.Context, req ExperimentRunRequest) (*
 			switch req.TaskType {
 			case "lottery_v2":
 				feedback, err = r.coach.JudgeLotteryV2Task(ctx, task)
+			case "lottery_multi":
+				if threshold > 0 {
+					feedback, err = r.coach.JudgeLotteryMultiPointsTaskWithThreshold(ctx, task, threshold)
+				} else {
+					feedback, err = r.coach.JudgeLotteryMultiPointsTask(ctx, task)
+				}
 			default:
 				// 规则变更模式下：按当前轮次门槛判题，并把门槛写进反馈，便于记忆演化
 				if threshold > 0 {
@@ -332,6 +353,52 @@ func buildLotteryV2Inputs(n int, seed int64, action string) []map[string]interfa
 			"is_vip":         isVip,
 			"is_blacklisted": isBlacklisted,
 			"daily_draws":    dailyDraws,
+		})
+	}
+	return out
+}
+
+func buildLotteryMultiPointsInputs(n int, seed int64, action string) []map[string]interface{} {
+	if action == "" {
+		action = "lottery"
+	}
+	// 覆盖边界与组合用例：让“可用/奖励/锁定/即将过期/惩罚”都出现
+	base := []map[string]interface{}{
+		{"action": action, "points_available": 0, "points_bonus": 0, "points_locked": 0, "points_expiring": 0, "expiring_days": 1, "points_penalty": 0},
+		{"action": action, "points_available": 60, "points_bonus": 80, "points_locked": 0, "points_expiring": 0, "expiring_days": 7, "points_penalty": 0},  // 奖励多但可能不全计入
+		{"action": action, "points_available": 90, "points_bonus": 30, "points_locked": 50, "points_expiring": 0, "expiring_days": 3, "points_penalty": 0}, // 锁定不计入
+		{"action": action, "points_available": 85, "points_bonus": 10, "points_locked": 0, "points_expiring": 20, "expiring_days": 1, "points_penalty": 0}, // 即将过期可能加成
+		{"action": action, "points_available": 105, "points_bonus": 0, "points_locked": 0, "points_expiring": 0, "expiring_days": 2, "points_penalty": 10}, // 惩罚扣减
+		{"action": action, "points_available": 99, "points_bonus": 50, "points_locked": 0, "points_expiring": 5, "expiring_days": 1, "points_penalty": 0},  // 边界附近
+	}
+
+	out := make([]map[string]interface{}, 0, n)
+	for len(out) < n && len(out) < len(base) {
+		out = append(out, base[len(out)])
+	}
+
+	rng := rand.New(rand.NewSource(seed))
+	for len(out) < n {
+		available := rng.Intn(151) // 0~150
+		bonus := rng.Intn(201)     // 0~200
+		locked := rng.Intn(101)    // 0~100
+		expiring := rng.Intn(51)   // 0~50
+		expDays := 1
+		if rng.Intn(3) != 0 {
+			expDays = rng.Intn(14) + 2 // 2~15
+		}
+		penalty := 0
+		if rng.Intn(5) == 0 {
+			penalty = rng.Intn(21) // 0~20
+		}
+		out = append(out, map[string]interface{}{
+			"action":           action,
+			"points_available": available,
+			"points_bonus":     bonus,
+			"points_locked":    locked,
+			"points_expiring":  expiring,
+			"expiring_days":    expDays,
+			"points_penalty":   penalty,
 		})
 	}
 	return out

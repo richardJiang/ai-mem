@@ -12,6 +12,15 @@ experiment-low:
 experiment-high:
 	HOST=http://localhost:8080 RUNS=100 RULE_MODE=high ./scripts/run_experiment_100.sh
 
+experiment-multi:
+	HOST=http://localhost:8080 RUNS=100 TASK_TYPE=lottery_multi ./scripts/run_experiment_100.sh
+
+experiment-multi-low:
+	HOST=http://localhost:8080 RUNS=100 TASK_TYPE=lottery_multi RULE_MODE=low ./scripts/run_experiment_100.sh
+
+experiment-multi-high:
+	HOST=http://localhost:8080 RUNS=100 TASK_TYPE=lottery_multi RULE_MODE=high ./scripts/run_experiment_100.sh
+
 build:
 	go build -o bin/mem-test main.go
 
