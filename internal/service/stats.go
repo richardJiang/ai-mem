@@ -51,6 +51,63 @@ func ComputeRunStatsAndTests(runID uint, groups []string, trend map[string][]int
 		}
 	}
 
+	// 组间显著性：D vs A/B/C（如果有 D 组）
+	if d, okD := stats["D"]; okD {
+		if a, okA := stats["A"]; okA {
+			p, z := twoPropZTest(a.Incorrect, a.N, d.Incorrect, d.N)
+			tests["D_vs_A"] = map[string]interface{}{
+				"p_value": p,
+				"z":       z,
+			}
+		}
+		if b, okB := stats["B"]; okB {
+			p, z := twoPropZTest(b.Incorrect, b.N, d.Incorrect, d.N)
+			tests["D_vs_B"] = map[string]interface{}{
+				"p_value": p,
+				"z":       z,
+			}
+		}
+		if c, okC := stats["C"]; okC {
+			p, z := twoPropZTest(c.Incorrect, c.N, d.Incorrect, d.N)
+			tests["D_vs_C"] = map[string]interface{}{
+				"p_value": p,
+				"z":       z,
+			}
+		}
+	}
+
+	// 组间显著性：E vs A/B/C/D（如果有 E 组）
+	if e, okE := stats["E"]; okE {
+		if a, okA := stats["A"]; okA {
+			p, z := twoPropZTest(a.Incorrect, a.N, e.Incorrect, e.N)
+			tests["E_vs_A"] = map[string]interface{}{
+				"p_value": p,
+				"z":       z,
+			}
+		}
+		if b, okB := stats["B"]; okB {
+			p, z := twoPropZTest(b.Incorrect, b.N, e.Incorrect, e.N)
+			tests["E_vs_B"] = map[string]interface{}{
+				"p_value": p,
+				"z":       z,
+			}
+		}
+		if c, okC := stats["C"]; okC {
+			p, z := twoPropZTest(c.Incorrect, c.N, e.Incorrect, e.N)
+			tests["E_vs_C"] = map[string]interface{}{
+				"p_value": p,
+				"z":       z,
+			}
+		}
+		if d, okD := stats["D"]; okD {
+			p, z := twoPropZTest(d.Incorrect, d.N, e.Incorrect, e.N)
+			tests["E_vs_D"] = map[string]interface{}{
+				"p_value": p,
+				"z":       z,
+			}
+		}
+	}
+
 	// 趋势检验：C 前半 vs 后半（两比例检验）
 	if cTrend, ok := trend["C"]; ok && len(cTrend) >= 10 {
 		mid := len(cTrend) / 2
@@ -58,6 +115,34 @@ func ComputeRunStatsAndTests(runID uint, groups []string, trend map[string][]int
 		lastN, lastBad := len(cTrend)-mid, sumInt(cTrend[mid:])
 		p, z := twoPropZTest(firstBad, firstN, lastBad, lastN)
 		tests["C_trend_first_vs_second_half"] = map[string]interface{}{
+			"p_value":                p,
+			"z":                      z,
+			"first_half_error_rate":  float64(firstBad) / math.Max(float64(firstN), 1),
+			"second_half_error_rate": float64(lastBad) / math.Max(float64(lastN), 1),
+		}
+	}
+
+	// 趋势检验：D 前半 vs 后半（两比例检验）
+	if dTrend, ok := trend["D"]; ok && len(dTrend) >= 10 {
+		mid := len(dTrend) / 2
+		firstN, firstBad := mid, sumInt(dTrend[:mid])
+		lastN, lastBad := len(dTrend)-mid, sumInt(dTrend[mid:])
+		p, z := twoPropZTest(firstBad, firstN, lastBad, lastN)
+		tests["D_trend_first_vs_second_half"] = map[string]interface{}{
+			"p_value":                p,
+			"z":                      z,
+			"first_half_error_rate":  float64(firstBad) / math.Max(float64(firstN), 1),
+			"second_half_error_rate": float64(lastBad) / math.Max(float64(lastN), 1),
+		}
+	}
+
+	// 趋势检验：E 前半 vs 后半（两比例检验）
+	if eTrend, ok := trend["E"]; ok && len(eTrend) >= 10 {
+		mid := len(eTrend) / 2
+		firstN, firstBad := mid, sumInt(eTrend[:mid])
+		lastN, lastBad := len(eTrend)-mid, sumInt(eTrend[mid:])
+		p, z := twoPropZTest(firstBad, firstN, lastBad, lastN)
+		tests["E_trend_first_vs_second_half"] = map[string]interface{}{
 			"p_value":                p,
 			"z":                      z,
 			"first_half_error_rate":  float64(firstBad) / math.Max(float64(firstN), 1),

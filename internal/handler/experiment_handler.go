@@ -23,7 +23,7 @@ func NewExperimentHandler(runner *service.ExperimentRunner) *ExperimentHandler {
 
 // GetExperimentStats 获取实验统计数据
 func (h *ExperimentHandler) GetExperimentStats(c *gin.Context) {
-	groupType := c.Query("group_type") // A/B/C
+	groupType := c.Query("group_type") // A/B/C/D/E
 
 	var tasks []model.Task
 	query := db.DB.Model(&model.Task{})
@@ -49,7 +49,7 @@ func (h *ExperimentHandler) GetExperimentStats(c *gin.Context) {
 
 // CompareGroups 对比A/B/C组
 func (h *ExperimentHandler) CompareGroups(c *gin.Context) {
-	groups := []string{"A", "B", "C"}
+	groups := []string{"A", "B", "C", "D", "E"}
 	comparison := make(map[string]interface{})
 
 	for _, group := range groups {
@@ -96,7 +96,7 @@ func (h *ExperimentHandler) GetErrorTrend(c *gin.Context) {
 		rounds = 0
 	}
 
-	groups := []string{"A", "B", "C"}
+	groups := []string{"A", "B", "C", "D", "E"}
 	curves := map[string]service.Curves{}
 	var thresholds []int
 
@@ -162,7 +162,7 @@ func (h *ExperimentHandler) CompareGroupsByModes(c *gin.Context) {
 			continue
 		}
 		rounds := run.RunsPerGroup
-		groups := []string{"A", "B", "C"}
+		groups := []string{"A", "B", "C", "D", "E"}
 
 		modeCurve := service.ModeCurve{
 			RunID:                  run.ID,

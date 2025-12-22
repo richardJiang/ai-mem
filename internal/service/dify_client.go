@@ -2,10 +2,18 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
+	"math/rand"
+	"net"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -42,6 +50,73 @@ func NewDifyClient(baseURL, apiKey string, appType string, responseMode string, 
 			Timeout: 30 * time.Second,
 		},
 	}
+}
+
+func difyMaxRetries() int {
+	// 只针对超时/临时网络错误做“少量重试”，避免实验被偶发 timeout 直接污染
+	// 默认 1 次重试（总共最多 2 次请求）
+	v := strings.TrimSpace(os.Getenv("DIFY_MAX_RETRIES"))
+	if v == "" {
+		return 1
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 1
+	}
+	if n < 0 {
+		return 0
+	}
+	if n > 3 {
+		return 3
+	}
+	return n
+}
+
+func difyRetryBackoff(attempt int) time.Duration {
+	// attempt: 1..N（第几次重试，不含首次）
+	base := 300 * time.Millisecond
+	// 简单指数退避 + jitter（避免多个并发同时重试）
+	d := base * time.Duration(1<<(attempt-1))
+	if d > 3*time.Second {
+		d = 3 * time.Second
+	}
+	j := time.Duration(rand.Intn(200)) * time.Millisecond
+	return d + j
+}
+
+func isRetryableDifyErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) {
+		if ne.Timeout() || ne.Temporary() {
+			return true
+		}
+	}
+	// 兜底：部分错误链会被包成字符串
+	s := err.Error()
+	if strings.Contains(s, "Client.Timeout exceeded") ||
+		strings.Contains(s, "context deadline exceeded") ||
+		strings.Contains(s, "connection reset") ||
+		strings.Contains(s, "EOF") {
+		return true
+	}
+	return false
+}
+
+func isRetryableStatus(code int) bool {
+	// 429/5xx 典型可重试
+	if code == http.StatusTooManyRequests {
+		return true
+	}
+	if code >= 500 && code <= 599 {
+		return true
+	}
+	return false
 }
 
 type ChatRequest struct {
@@ -116,43 +191,53 @@ func (c *DifyClient) Chat(prompt string, inputs map[string]interface{}) (*ChatRe
 		return nil, fmt.Errorf("序列化请求失败: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("创建请求失败: %w", err)
-	}
+	var lastErr error
+	maxR := difyMaxRetries()
+	for attempt := 0; attempt <= maxR; attempt++ {
+		req, err := http.NewRequestWithContext(context.Background(), "POST", url, bytes.NewBuffer(jsonData))
+		if err != nil {
+			return nil, fmt.Errorf("创建请求失败: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.APIKey))
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.APIKey))
-
-	resp, err := c.Client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("请求失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		// 尝试解析错误信息
-		var errResp map[string]interface{}
-		if json.Unmarshal(body, &errResp) == nil {
-			if msg, ok := errResp["message"].(string); ok {
-				return nil, fmt.Errorf("API返回错误: %d, %s", resp.StatusCode, msg)
+		resp, err := c.Client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("请求失败: %w", err)
+			if attempt < maxR && isRetryableDifyErr(err) {
+				sleep := difyRetryBackoff(attempt + 1)
+				log.Printf("[dify] chat retry=%d/%d sleep=%s err=%v", attempt+1, maxR, sleep, err)
+				time.Sleep(sleep)
+				continue
 			}
+			return nil, lastErr
 		}
-		// 如果无法解析，返回原始body（截取前500字符避免过长）
-		bodyStr := string(body)
-		if len(bodyStr) > 500 {
-			bodyStr = bodyStr[:500] + "..."
+
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			bodyStr := string(body)
+			if len(bodyStr) > 500 {
+				bodyStr = bodyStr[:500] + "..."
+			}
+			lastErr = fmt.Errorf("API返回错误: %d, %s", resp.StatusCode, bodyStr)
+			if attempt < maxR && isRetryableStatus(resp.StatusCode) {
+				sleep := difyRetryBackoff(attempt + 1)
+				log.Printf("[dify] chat retry=%d/%d sleep=%s status=%d", attempt+1, maxR, sleep, resp.StatusCode)
+				time.Sleep(sleep)
+				continue
+			}
+			return nil, lastErr
 		}
-		return nil, fmt.Errorf("API返回错误: %d, %s", resp.StatusCode, bodyStr)
-	}
 
-	var chatResp ChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return nil, fmt.Errorf("解析响应失败: %w", err)
+		var chatResp ChatResponse
+		if err := json.Unmarshal(body, &chatResp); err != nil {
+			return nil, fmt.Errorf("解析响应失败: %w", err)
+		}
+		return &chatResp, nil
 	}
-
-	return &chatResp, nil
+	return nil, lastErr
 }
 
 // Completion 使用completions端点（适用于completion模式应用）
@@ -171,43 +256,53 @@ func (c *DifyClient) Completion(prompt string, inputs map[string]interface{}) (*
 		return nil, fmt.Errorf("序列化请求失败: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("创建请求失败: %w", err)
-	}
+	var lastErr error
+	maxR := difyMaxRetries()
+	for attempt := 0; attempt <= maxR; attempt++ {
+		req, err := http.NewRequestWithContext(context.Background(), "POST", url, bytes.NewBuffer(jsonData))
+		if err != nil {
+			return nil, fmt.Errorf("创建请求失败: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.APIKey))
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.APIKey))
-
-	resp, err := c.Client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("请求失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		// 尝试解析错误信息
-		var errResp map[string]interface{}
-		if json.Unmarshal(body, &errResp) == nil {
-			if msg, ok := errResp["message"].(string); ok {
-				return nil, fmt.Errorf("API返回错误: %d, %s", resp.StatusCode, msg)
+		resp, err := c.Client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("请求失败: %w", err)
+			if attempt < maxR && isRetryableDifyErr(err) {
+				sleep := difyRetryBackoff(attempt + 1)
+				log.Printf("[dify] completion retry=%d/%d sleep=%s err=%v", attempt+1, maxR, sleep, err)
+				time.Sleep(sleep)
+				continue
 			}
+			return nil, lastErr
 		}
-		// 如果无法解析，返回原始body（截取前500字符避免过长）
-		bodyStr := string(body)
-		if len(bodyStr) > 500 {
-			bodyStr = bodyStr[:500] + "..."
+
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			bodyStr := string(body)
+			if len(bodyStr) > 500 {
+				bodyStr = bodyStr[:500] + "..."
+			}
+			lastErr = fmt.Errorf("API返回错误: %d, %s", resp.StatusCode, bodyStr)
+			if attempt < maxR && isRetryableStatus(resp.StatusCode) {
+				sleep := difyRetryBackoff(attempt + 1)
+				log.Printf("[dify] completion retry=%d/%d sleep=%s status=%d", attempt+1, maxR, sleep, resp.StatusCode)
+				time.Sleep(sleep)
+				continue
+			}
+			return nil, lastErr
 		}
-		return nil, fmt.Errorf("API返回错误: %d, %s", resp.StatusCode, bodyStr)
-	}
 
-	var completionResp CompletionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&completionResp); err != nil {
-		return nil, fmt.Errorf("解析响应失败: %w", err)
+		var completionResp CompletionResponse
+		if err := json.Unmarshal(body, &completionResp); err != nil {
+			return nil, fmt.Errorf("解析响应失败: %w", err)
+		}
+		return &completionResp, nil
 	}
-
-	return &completionResp, nil
+	return nil, lastErr
 }
 
 func (c *DifyClient) WorkflowRun(inputs map[string]interface{}) (string, int, error) {
@@ -224,37 +319,56 @@ func (c *DifyClient) WorkflowRun(inputs map[string]interface{}) (string, int, er
 		return "", 0, fmt.Errorf("序列化请求失败: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", 0, fmt.Errorf("创建请求失败: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.APIKey))
-
-	resp, err := c.Client.Do(req)
-	if err != nil {
-		return "", 0, fmt.Errorf("请求失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		bodyStr := string(body)
-		if len(bodyStr) > 500 {
-			bodyStr = bodyStr[:500] + "..."
+	var lastErr error
+	maxR := difyMaxRetries()
+	for attempt := 0; attempt <= maxR; attempt++ {
+		req, err := http.NewRequestWithContext(context.Background(), "POST", url, bytes.NewBuffer(jsonData))
+		if err != nil {
+			return "", 0, fmt.Errorf("创建请求失败: %w", err)
 		}
-		return "", 0, fmt.Errorf("API返回错误: %d, %s", resp.StatusCode, bodyStr)
-	}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.APIKey))
 
-	// streaming 模式会返回 SSE；本项目不解析 SSE，建议用 blocking
-	var runResp WorkflowRunResponse
-	if err := json.NewDecoder(resp.Body).Decode(&runResp); err != nil {
-		return "", 0, fmt.Errorf("解析响应失败: %w", err)
-	}
+		resp, err := c.Client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("请求失败: %w", err)
+			if attempt < maxR && isRetryableDifyErr(err) {
+				sleep := difyRetryBackoff(attempt + 1)
+				log.Printf("[dify] workflow retry=%d/%d sleep=%s err=%v", attempt+1, maxR, sleep, err)
+				time.Sleep(sleep)
+				continue
+			}
+			return "", 0, lastErr
+		}
 
-	answer := extractWorkflowAnswer(runResp.Data.Outputs, c.WorkflowOutputKey)
-	return answer, 0, nil
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			bodyStr := string(body)
+			if len(bodyStr) > 500 {
+				bodyStr = bodyStr[:500] + "..."
+			}
+			lastErr = fmt.Errorf("API返回错误: %d, %s", resp.StatusCode, bodyStr)
+			if attempt < maxR && isRetryableStatus(resp.StatusCode) {
+				sleep := difyRetryBackoff(attempt + 1)
+				log.Printf("[dify] workflow retry=%d/%d sleep=%s status=%d", attempt+1, maxR, sleep, resp.StatusCode)
+				time.Sleep(sleep)
+				continue
+			}
+			return "", 0, lastErr
+		}
+
+		// streaming 模式会返回 SSE；本项目不解析 SSE，建议用 blocking
+		var runResp WorkflowRunResponse
+		if err := json.Unmarshal(body, &runResp); err != nil {
+			return "", 0, fmt.Errorf("解析响应失败: %w", err)
+		}
+
+		answer := extractWorkflowAnswer(runResp.Data.Outputs, c.WorkflowOutputKey)
+		return answer, 0, nil
+	}
+	return "", 0, lastErr
 }
 
 func extractWorkflowAnswer(outputs map[string]interface{}, outputKey string) string {

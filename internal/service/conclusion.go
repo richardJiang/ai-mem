@@ -29,6 +29,40 @@ func GenerateConclusionFromStats(stats map[string]GroupStats, tests map[string]i
 		out["caveats"] = append(out["caveats"].([]string), "C组样本量不足，无法判断学习趋势（建议每组>=30）。")
 	}
 
+	// 趋势：D 前半 vs 后半（跨 run 复用全局中期记忆池，期望更稳）
+	dTrend, okDTrend := trend["D"]
+	if okDTrend && len(dTrend) >= 10 {
+		first := avgInt(dTrend[:len(dTrend)/2])
+		last := avgInt(dTrend[len(dTrend)/2:])
+		out["metrics"].(map[string]interface{})["D_first_half_error_rate"] = first
+		out["metrics"].(map[string]interface{})["D_second_half_error_rate"] = last
+		if last < first {
+			out["claims"] = append(out["claims"].([]string), "D组错误率后半段低于前半段，表明“短期纠错 + 全局中期记忆池固化”的学习链路在本次run内发挥作用。")
+			if out["verdict"] == "insufficient_data" {
+				out["verdict"] = "learning_observed"
+			}
+		}
+	} else {
+		out["caveats"] = append(out["caveats"].([]string), "D组样本量不足，无法判断学习趋势（建议每组>=30）。")
+	}
+
+	// 趋势：E 前半 vs 后半（两阶段推理 + 记忆门控 + 验证固化）
+	eTrend, okETrend := trend["E"]
+	if okETrend && len(eTrend) >= 10 {
+		first := avgInt(eTrend[:len(eTrend)/2])
+		last := avgInt(eTrend[len(eTrend)/2:])
+		out["metrics"].(map[string]interface{})["E_first_half_error_rate"] = first
+		out["metrics"].(map[string]interface{})["E_second_half_error_rate"] = last
+		if last < first {
+			out["claims"] = append(out["claims"].([]string), "E组错误率后半段低于前半段，表明“自检纠错 + 记忆门控 + 验证固化”在本次run内进一步提升稳定性。")
+			if out["verdict"] == "insufficient_data" {
+				out["verdict"] = "learning_observed"
+			}
+		}
+	} else {
+		out["caveats"] = append(out["caveats"].([]string), "E组样本量不足，无法判断学习趋势（建议每组>=30）。")
+	}
+
 	// 组间：C vs A, C vs B（需要显著性）
 	a, okA := stats["A"]
 	b, okB := stats["B"]
@@ -58,6 +92,49 @@ func GenerateConclusionFromStats(stats map[string]GroupStats, tests map[string]i
 		}
 	} else {
 		out["caveats"] = append(out["caveats"].([]string), "缺少A/B/C组的run内统计，无法做组间显著性对比。")
+	}
+
+	// 组间：D vs A/B/C（如果存在 D 组）
+	d, okD := stats["D"]
+	if okA && okB && okC && okD {
+		out["metrics"].(map[string]interface{})["D_error_rate"] = d.ErrorRate
+		out["metrics"].(map[string]interface{})["D_ci95"] = []float64{d.CI95Low, d.CI95High}
+		out["metrics"].(map[string]interface{})["p_D_vs_A"] = getPValue(tests, "D_vs_A")
+		out["metrics"].(map[string]interface{})["p_D_vs_B"] = getPValue(tests, "D_vs_B")
+		out["metrics"].(map[string]interface{})["p_D_vs_C"] = getPValue(tests, "D_vs_C")
+
+		pDA := getPValue(tests, "D_vs_A")
+		pDB := getPValue(tests, "D_vs_B")
+		pDC := getPValue(tests, "D_vs_C")
+		if d.ErrorRate < a.ErrorRate && d.ErrorRate < b.ErrorRate && d.ErrorRate < c.ErrorRate && pDA < 0.05 && pDB < 0.05 && pDC < 0.05 {
+			out["claims"] = append(out["claims"].([]string), "在本次run内，D组错误率显著低于A/B/C组（p<0.05），支持“跨run可复用的中期记忆池 + 短期纠错信号”进一步提升稳定性。")
+			if out["verdict"] == "insufficient_data" {
+				out["verdict"] = "memory_effect_supported"
+			}
+		}
+	}
+
+	// 组间：E vs A/B/C/D（如果存在 E 组）
+	e, okE := stats["E"]
+	if okA && okB && okC && okD && okE {
+		out["metrics"].(map[string]interface{})["E_error_rate"] = e.ErrorRate
+		out["metrics"].(map[string]interface{})["E_ci95"] = []float64{e.CI95Low, e.CI95High}
+		out["metrics"].(map[string]interface{})["p_E_vs_A"] = getPValue(tests, "E_vs_A")
+		out["metrics"].(map[string]interface{})["p_E_vs_B"] = getPValue(tests, "E_vs_B")
+		out["metrics"].(map[string]interface{})["p_E_vs_C"] = getPValue(tests, "E_vs_C")
+		out["metrics"].(map[string]interface{})["p_E_vs_D"] = getPValue(tests, "E_vs_D")
+
+		pEA := getPValue(tests, "E_vs_A")
+		pEB := getPValue(tests, "E_vs_B")
+		pEC := getPValue(tests, "E_vs_C")
+		pED := getPValue(tests, "E_vs_D")
+		if e.ErrorRate < a.ErrorRate && e.ErrorRate < b.ErrorRate && e.ErrorRate < c.ErrorRate && e.ErrorRate < d.ErrorRate &&
+			pEA < 0.05 && pEB < 0.05 && pEC < 0.05 && pED < 0.05 {
+			out["claims"] = append(out["claims"].([]string), "在本次run内，E组错误率显著低于A/B/C/D组（p<0.05），支持“验证固化 + 自检纠错 + MemOS门控召回”优于 D 组策略。")
+			if out["verdict"] == "insufficient_data" {
+				out["verdict"] = "memory_effect_supported"
+			}
+		}
 	}
 
 	return out

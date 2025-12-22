@@ -69,23 +69,11 @@ func (r *ExperimentRunner) Run(ctx context.Context, req ExperimentRunRequest) (*
 		req.Seed = time.Now().UnixNano()
 	}
 	if len(req.Groups) == 0 {
-		req.Groups = []string{"A", "B", "C"}
+		req.Groups = []string{"A", "B", "C", "D", "E"}
 	}
 	if req.RuleMode == "" {
 		req.RuleMode = "none"
 	}
-
-	// 移除不适配本模拟机制的实验组（D 组）：
-	// - 该项目的“学习链路”与统计口径默认围绕 A/B/C 设计
-	// - D 组（外部 MemOS）会引入不可控的检索/写入机制差异，容易破坏可归因性
-	filteredGroups := make([]string, 0, len(req.Groups))
-	for _, g := range req.Groups {
-		if g == "D" {
-			continue
-		}
-		filteredGroups = append(filteredGroups, g)
-	}
-	req.Groups = filteredGroups
 
 	groupsJSON, _ := json.Marshal(req.Groups)
 	run := &model.ExperimentRun{
@@ -200,9 +188,19 @@ func (r *ExperimentRunner) Run(ctx context.Context, req ExperimentRunRequest) (*
 						result.Errors = append(result.Errors, fmt.Sprintf("run=%d group=%s round=%d reflect failed: %v", run.ID, group, i, err))
 					}
 				}
+				if group == "D" {
+					if _, err := r.reflection.ReflectAndSaveMemoryAndConsolidateGlobal(ctx, task.ID, feedback); err != nil {
+						result.Errors = append(result.Errors, fmt.Sprintf("run=%d group=%s round=%d reflect+consolidate failed: %v", run.ID, group, i, err))
+					}
+				}
+				if group == "E" {
+					if _, err := r.reflection.ReflectAndSaveMemoryAndConsolidateGlobalValidated(ctx, task.ID, feedback); err != nil {
+						result.Errors = append(result.Errors, fmt.Sprintf("run=%d group=%s round=%d reflect+validate+consolidate failed: %v", run.ID, group, i, err))
+					}
+				}
 			} else {
 				// 判对：对本次使用到的记忆做“验证时间”更新，帮助规则变更场景下优先检索当前有效规则
-				if group == "C" && task.MemoryIDs != "" {
+				if (group == "C" || group == "D" || group == "E") && task.MemoryIDs != "" {
 					ids := ParseMemoryIDs(task.MemoryIDs)
 					if len(ids) > 0 {
 						now := time.Now()

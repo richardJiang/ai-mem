@@ -243,6 +243,8 @@
                         <option value="A">A组（无记忆）</option>
                         <option value="B">B组（有记忆，无反思）</option>
                         <option value="C" selected>C组（有记忆+反思）</option>
+                        <option value="D">D组（短期纠错 + 全局中期记忆池，可跨run复用）</option>
+                        <option value="E">E组（两阶段自检纠错 + MemOS门控 + 验证固化，全量最强）</option>
                     </select>
                 </div>
                 <button class="btn btn-primary" onclick="executeTask()">执行任务</button>
@@ -619,7 +621,8 @@
                 A: '#ff4d4f',
                 B: '#faad14',
                 C: '#52c41a',
-                D: '#1890ff'
+                D: '#1890ff',
+                E: '#722ed1'
             };
 
             // axes
@@ -796,8 +799,9 @@
                 const B = overall.B?.[k] ?? 0;
                 const C = overall.C?.[k] ?? 0;
                 const D = overall.D?.[k] ?? 0;
+                const E = overall.E?.[k] ?? 0;
                 const fmt = v => k === 'error_rate' ? ((v||0)*100).toFixed(1)+'%' : v;
-                return `<tr><td>${label}</td><td>${fmt(A)}</td><td>${fmt(B)}</td><td>${fmt(C)}</td><td>${fmt(D)}</td></tr>`;
+                return `<tr><td>${label}</td><td>${fmt(A)}</td><td>${fmt(B)}</td><td>${fmt(C)}</td><td>${fmt(D)}</td><td>${fmt(E)}</td></tr>`;
             }).join('');
 
             const trialText = (trial.change_points && trial.change_points.length)
@@ -812,7 +816,8 @@
                     A: curves.A?.cumulative_accuracy || [],
                     B: curves.B?.cumulative_accuracy || [],
                     C: curves.C?.cumulative_accuracy || [],
-                    D: curves.D?.cumulative_accuracy || []
+                    D: curves.D?.cumulative_accuracy || [],
+                    E: curves.E?.cumulative_accuracy || []
                 };
                 renderLineChart(canvas, labels, series, {title: `${modeLabel}：累计正确率（随轮次）`});
 
@@ -833,11 +838,11 @@
                 <div style="margin-top:10px;">
                     <div style="color:#666; margin:6px 0;">run_id: ${modeData.run_id || '-'}</div>
                     <div style="color:#333; margin:6px 0;">
-                        <b>首次出错轮次</b>：A组 ${fe('A')}｜B组 ${fe('B')}｜C组 ${fe('C')}｜D组 ${fe('D')}
+                        <b>首次出错轮次</b>：A组 ${fe('A')}｜B组 ${fe('B')}｜C组 ${fe('C')}｜D组 ${fe('D')}｜E组 ${fe('E')}
                         <span style="margin-left:12px;"><b>记忆开始变更</b>：${memStartText}</span>
                     </div>
                     <table class="comparison-table">
-                        <tr><th>指标</th><th>A组</th><th>B组</th><th>C组</th><th>D组</th></tr>
+                        <tr><th>指标</th><th>A组</th><th>B组</th><th>C组</th><th>D组</th><th>E组</th></tr>
                         ${tableRows}
                     </table>
                     <div style="margin:10px 0; color:#333;"><b>C组调整记忆试错次数</b>: ${trialText}</div>
@@ -902,7 +907,8 @@
                     A: data.curves.A?.cumulative_error || [],
                     B: data.curves.B?.cumulative_error || [],
                     C: data.curves.C?.cumulative_error || [],
-                    D: data.curves.D?.cumulative_error || []
+                    D: data.curves.D?.cumulative_error || [],
+                    E: data.curves.E?.cumulative_error || []
                 };
                 renderLineChart(canvas, labels, series, {title: `${mode}：累计错误率（随轮次）`});
             } catch (error) {
