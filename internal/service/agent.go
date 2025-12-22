@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -26,6 +27,12 @@ func NewAgentService(difyClient *DifyClient, memosClient *MemOSClient, memosUser
 	}
 }
 
+const (
+	// memosFallbackMinLocalHits：本地命中少于该值，且置信度较低时，认为“很弱”
+	memosFallbackMinLocalHits = 2
+	memosFallbackLowConfidence = 0.65
+)
+
 // ExecuteTask 执行任务（带记忆检索）
 func (s *AgentService) ExecuteTask(ctx context.Context, taskType, input string, groupType string, useMemory bool) (*model.Task, error) {
 	return s.ExecuteTaskInRun(ctx, 0, taskType, input, groupType, useMemory)
@@ -36,6 +43,7 @@ func (s *AgentService) ExecuteTaskInRun(ctx context.Context, runID uint, taskTyp
 	var relevantMemories []model.Memory
 	var memoryIDs []string
 	var logCases []model.Task
+	var externalMemories []MemOSSearchItem
 
 	// 如果使用记忆，检索相关记忆
 	if useMemory {
@@ -67,11 +75,26 @@ func (s *AgentService) ExecuteTaskInRun(ctx context.Context, runID uint, taskTyp
 						}).Error
 				}
 			}
+
+			// run_id=0 的常规模式：本地记忆为空/很弱时，补充 MemOS 外部长期记忆（不参与本地记忆的验证/追责）
+			if runID == 0 && s.shouldFallbackToMemOS(relevantMemories) && s.memosClient != nil && s.memosClient.Enabled() {
+				userID := s.memOSUserID(taskType)
+				// 尝试注册（多数实现会幂等；失败不影响主流程）
+				if err := s.memosClient.RegisterUser(ctx, userID); err != nil {
+					log.Printf("[memos] register user failed user=%s err=%v", userID, err)
+				}
+				hits, err := s.memosClient.Search(ctx, userID, s.memOSQuery(taskType, input))
+				if err != nil {
+					log.Printf("[memos] search failed user=%s err=%v", userID, err)
+				} else {
+					externalMemories = hits
+				}
+			}
 		}
 	}
 
 	// 构建提示词
-	prompt := s.buildPrompt(taskType, input, relevantMemories, logCases)
+	prompt := s.buildPrompt(taskType, input, relevantMemories, logCases, externalMemories)
 
 	// 调用Dify（智能选择chat或completion模式）
 	var inputs map[string]interface{}
@@ -170,8 +193,49 @@ func (s *AgentService) retrieveTaskLogs(ctx context.Context, runID uint, taskTyp
 	return tasks, nil
 }
 
-// buildPrompt 构建提示词（注入记忆/日志案例）
-func (s *AgentService) buildPrompt(taskType, input string, memories []model.Memory, logs []model.Task) string {
+func (s *AgentService) shouldFallbackToMemOS(local []model.Memory) bool {
+	if len(local) == 0 {
+		return true
+	}
+	// “很弱”：命中极少且最高置信度偏低
+	if len(local) < memosFallbackMinLocalHits {
+		maxConf := 0.0
+		for _, m := range local {
+			if m.Confidence > maxConf {
+				maxConf = m.Confidence
+			}
+		}
+		if maxConf < memosFallbackLowConfidence {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *AgentService) memOSUserID(taskType string) string {
+	p := strings.TrimSpace(s.memosUserPref)
+	if p == "" {
+		p = "mem-test"
+	}
+	tt := strings.TrimSpace(taskType)
+	if tt == "" {
+		tt = "unknown"
+	}
+	// 以 taskType 做隔离，避免不同任务域的记忆互相污染
+	return fmt.Sprintf("%s:%s", p, tt)
+}
+
+func (s *AgentService) memOSQuery(taskType, input string) string {
+	// 尽量让 MemOS 侧有可检索的关键词，同时避免超长 query
+	q := fmt.Sprintf("task_type=%s input=%s", strings.TrimSpace(taskType), strings.TrimSpace(input))
+	if len(q) > 800 {
+		q = q[:800]
+	}
+	return q
+}
+
+// buildPrompt 构建提示词（注入记忆/日志案例/外部长期记忆）
+func (s *AgentService) buildPrompt(taskType, input string, memories []model.Memory, logs []model.Task, external []MemOSSearchItem) string {
 	var prompt strings.Builder
 
 	prompt.WriteString(fmt.Sprintf("任务类型: %s\n", taskType))
@@ -197,6 +261,19 @@ func (s *AgentService) buildPrompt(taskType, input string, memories []model.Memo
 		prompt.WriteString("重要经验（请遵循）:\n")
 		for i, m := range memories {
 			prompt.WriteString(fmt.Sprintf("%d. [%s] %s\n", i+1, m.Trigger, m.Lesson))
+		}
+		prompt.WriteString("\n")
+	}
+
+	if len(external) > 0 {
+		prompt.WriteString("外部长期记忆（仅供参考；可能与当前规则不一致，请谨慎）:\n")
+		for i, it := range external {
+			// score 可能为 0（部分版本不返回），不强制展示
+			if it.Score > 0 {
+				prompt.WriteString(fmt.Sprintf("%d. (score=%.4f) %s\n", i+1, it.Score, it.Content))
+			} else {
+				prompt.WriteString(fmt.Sprintf("%d. %s\n", i+1, it.Content))
+			}
 		}
 		prompt.WriteString("\n")
 	}

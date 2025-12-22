@@ -25,6 +25,6 @@ func NewServiceContext(cfg *config.Config) *ServiceContext {
 	return &ServiceContext{
 		AgentService:      NewAgentService(difyClient, memosClient, cfg.MemOS.UserPrefix),
 		CoachService:      NewCoachService(),
-		ReflectionService: NewReflectionService(difyClient),
+		ReflectionService: NewReflectionService(difyClient, memosClient, cfg.MemOS.UserPrefix),
 	}
 }

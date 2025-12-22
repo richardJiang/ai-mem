@@ -43,7 +43,7 @@ func TestMemoryEvolution_Integration(t *testing.T) {
 
 	agentService := NewAgentService(difyClient, nil, "")
 	coachService := NewCoachService()
-	reflectionService := NewReflectionService(difyClient)
+	reflectionService := NewReflectionService(difyClient, nil, "")
 
 	ctx := context.Background()
 

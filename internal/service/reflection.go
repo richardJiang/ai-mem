@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -14,12 +15,16 @@ import (
 )
 
 type ReflectionService struct {
-	difyClient *DifyClient
+	difyClient    *DifyClient
+	memosClient   *MemOSClient
+	memosUserPref string
 }
 
-func NewReflectionService(difyClient *DifyClient) *ReflectionService {
+func NewReflectionService(difyClient *DifyClient, memosClient *MemOSClient, memosUserPref string) *ReflectionService {
 	return &ReflectionService{
-		difyClient: difyClient,
+		difyClient:    difyClient,
+		memosClient:   memosClient,
+		memosUserPref: memosUserPref,
 	}
 }
 
@@ -99,6 +104,23 @@ func (s *ReflectionService) ReflectAndSaveMemory(ctx context.Context, taskID uin
 		return nil, fmt.Errorf("保存记忆失败: %w", err)
 	}
 
+	// run_id=0 的常规模式：同步写入 MemOS（作为长期外部记忆层）
+	// 注意：实验 run_id>0 严格不写入，避免污染实验可归因性
+	if task.RunID == 0 && s.memosClient != nil && s.memosClient.Enabled() {
+		userID := s.memOSUserID(task.TaskType)
+		// 先注册（尽量幂等）；失败不影响主流程
+		if err := s.memosClient.RegisterUser(ctx, userID); err != nil {
+			log.Printf("[memos] register user failed user=%s err=%v", userID, err)
+		}
+		// content 用结构化文本，便于检索与审计
+		content := fmt.Sprintf("apply_to=%s trigger=%s lesson=%s confidence=%.4f", memory.ApplyTo, memory.Trigger, memory.Lesson, memory.Confidence)
+		// source 显式标注：本项目 + run_id=0 + reflection（避免与实验数据混淆）
+		source := fmt.Sprintf("mem-test|local_db|run_id=0|reflection|task_id=%d|memory_id=%d", task.ID, memory.ID)
+		if err := s.memosClient.AddMemory(ctx, userID, content, source); err != nil {
+			log.Printf("[memos] add memory failed user=%s err=%v", userID, err)
+		}
+	}
+
 	// 更新反馈记录
 	feedback.UsedForMemory = true
 	memoryID := memory.ID
@@ -106,6 +128,18 @@ func (s *ReflectionService) ReflectAndSaveMemory(ctx context.Context, taskID uin
 	db.DB.Save(feedback)
 
 	return memory, nil
+}
+
+func (s *ReflectionService) memOSUserID(taskType string) string {
+	p := strings.TrimSpace(s.memosUserPref)
+	if p == "" {
+		p = "mem-test"
+	}
+	tt := strings.TrimSpace(taskType)
+	if tt == "" {
+		tt = "unknown"
+	}
+	return fmt.Sprintf("%s:%s", p, tt)
 }
 
 func (s *ReflectionService) penalizeUsedMemories(ctx context.Context, task *model.Task) {
