@@ -8,6 +8,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"mem-test/internal/db"
@@ -20,6 +21,9 @@ type AgentService struct {
 	difyClient    *DifyClient
 	memosClient   *MemOSClient
 	memosUserPref string
+
+	fMu     sync.Mutex
+	fStates map[string]*fRunState // key=runID:taskType
 }
 
 type memoryScope int
@@ -34,6 +38,7 @@ func NewAgentService(difyClient *DifyClient, memosClient *MemOSClient, memosUser
 		difyClient:    difyClient,
 		memosClient:   memosClient,
 		memosUserPref: memosUserPref,
+		fStates:       map[string]*fRunState{},
 	}
 }
 
@@ -67,7 +72,7 @@ func (s *AgentService) ExecuteTaskInRun(ctx context.Context, runID uint, taskTyp
 			}
 		} else {
 			scope := memoryScopeRunOnly
-			if groupType == "D" || groupType == "E" {
+			if groupType == "D" || groupType == "E" || groupType == "F" {
 				// D 组：跨 run 复用“全局中期记忆池”（run_id=0 且 global 前缀）+ 当前 run 内的新记忆
 				scope = memoryScopeRunAndGlobal
 				if runID > 0 {
@@ -75,17 +80,28 @@ func (s *AgentService) ExecuteTaskInRun(ctx context.Context, runID uint, taskTyp
 					if groupType == "E" {
 						limit = 3
 					}
+					if groupType == "F" {
+						limit = 4
+					}
 					if rec, err := s.retrieveRecentIncorrectFeedbacks(ctx, runID, taskType, limit); err == nil {
 						recentIncorrectFeedbacks = rec
 					}
 				}
 			}
-			// C/D 组：检索抽象规则记忆
-			memories, err := s.retrieveMemories(ctx, runID, taskType, input, scope)
+			// C/D/E/F 组：检索抽象规则记忆
+			memLimit := 5
+			if groupType == "F" {
+				// F 组：需要更多候选做“竞争/探索”，避免高频变更下被 top1 锁死
+				memLimit = 12
+			}
+			memories, err := s.retrieveMemoriesWithLimit(ctx, runID, taskType, input, scope, memLimit)
 			if err == nil {
 				// E 组：按输入相关性重排（优先阈值更接近当前 points 的规则，减少无关规则污染）
 				if groupType == "E" {
 					memories = rerankMemoriesByInput(taskType, inputFeatures, memories)
+				}
+				if groupType == "F" {
+					memories = s.selectFMemories(runID, taskType, memories)
 				}
 				relevantMemories = memories
 				var ids []uint
@@ -109,7 +125,7 @@ func (s *AgentService) ExecuteTaskInRun(ctx context.Context, runID uint, taskTyp
 			// MemOS 外部长期记忆检索：
 			// - 常规模式（run_id=0）：本地记忆为空/很弱时补充
 			// - 实验 D 组（run_id>0 且 group=D）：允许使用 MemOS（用户显式要求 D 组使用 MemOS）
-			useMemOS := (runID == 0) || (groupType == "D") || (groupType == "E")
+			useMemOS := (runID == 0) || (groupType == "D") || (groupType == "E") || (groupType == "F")
 			if useMemOS && s.shouldFallbackToMemOS(relevantMemories) && s.memosClient != nil && s.memosClient.Enabled() {
 				userID := s.memOSUserID(taskType)
 				// 尝试注册（多数实现会幂等；失败不影响主流程）
@@ -159,7 +175,7 @@ func (s *AgentService) ExecuteTaskInRun(ctx context.Context, runID uint, taskTyp
 	answer := resp.Answer
 	tokenCount := resp.Metadata.Usage.TotalTokens
 
-	if groupType == "E" {
+	if groupType == "E" || groupType == "F" {
 		// E 阶段2：自检纠错（把 stage1 的答案、严格规则、以及 MemOS 候选记忆一起给模型做一致性校验）
 		checkPrompt := s.buildECheckPrompt(taskType, input, relevantMemories, recentIncorrectFeedbacks, externalMemories, answer)
 		checkInputs := inputs
@@ -203,7 +219,14 @@ func (s *AgentService) ExecuteTaskInRun(ctx context.Context, runID uint, taskTyp
 
 // retrieveMemories 检索相关记忆
 func (s *AgentService) retrieveMemories(ctx context.Context, runID uint, taskType, input string, scope memoryScope) ([]model.Memory, error) {
+	return s.retrieveMemoriesWithLimit(ctx, runID, taskType, input, scope, 5)
+}
+
+func (s *AgentService) retrieveMemoriesWithLimit(ctx context.Context, runID uint, taskType, input string, scope memoryScope, limit int) ([]model.Memory, error) {
 	var memories []model.Memory
+	if limit <= 0 {
+		limit = 5
+	}
 
 	// 简单关键词匹配（MVP版本）
 	// 注意：trigger是MySQL保留关键字，需要用反引号包裹
@@ -222,7 +245,7 @@ func (s *AgentService) retrieveMemories(ctx context.Context, runID uint, taskTyp
 		Where("(apply_to = ? OR apply_to = ?)", taskType, "通用").
 		// 排序核心：优先“最近被验证为正确”的规则，其次最新版本，再考虑置信度/使用次数
 		Order("last_verified_at DESC, version DESC, confidence DESC, use_count DESC, updated_at DESC").
-		Limit(5).
+		Limit(limit).
 		Find(&memories)
 
 	if query.Error != nil {
@@ -230,6 +253,192 @@ func (s *AgentService) retrieveMemories(ctx context.Context, runID uint, taskTyp
 	}
 
 	return memories, nil
+}
+
+type fRunState struct {
+	epoch                int
+	consecutiveIncorrect int
+	exploreUntilRound    int
+	currentRound         int
+	banUntil             map[uint]int // memoryID -> round
+	stats                map[uint]*fCandStat
+}
+
+type fCandStat struct {
+	wins   int
+	losses int
+}
+
+func (s *AgentService) fKey(runID uint, taskType string) string {
+	return fmt.Sprintf("%d:%s", runID, strings.TrimSpace(taskType))
+}
+
+func (s *AgentService) getOrInitFState(runID uint, taskType string) *fRunState {
+	key := s.fKey(runID, taskType)
+	st, ok := s.fStates[key]
+	if ok && st != nil {
+		return st
+	}
+	st = &fRunState{
+		epoch:                1,
+		consecutiveIncorrect: 0,
+		exploreUntilRound:    0,
+		currentRound:         0,
+		banUntil:             map[uint]int{},
+		stats:                map[uint]*fCandStat{},
+	}
+	s.fStates[key] = st
+	return st
+}
+
+func (s *AgentService) SetFCurrentRound(runID uint, taskType string, round int) {
+	if runID == 0 {
+		return
+	}
+	s.fMu.Lock()
+	defer s.fMu.Unlock()
+	st := s.getOrInitFState(runID, taskType)
+	st.currentRound = round
+}
+
+// UpdateFStateAfterJudge 在判题之后更新 F 组的“变更检测/epoch/bandit”状态
+// 说明：这里只用 correct/incorrect 信号，不读取真实阈值，不作弊。
+func (s *AgentService) UpdateFStateAfterJudge(ctx context.Context, runID uint, taskType string, task *model.Task, feedback *model.Feedback, round int) {
+	if runID == 0 || task == nil || feedback == nil {
+		return
+	}
+	// 只服务 F 组调用（runner 已经控制）
+	ids := ParseMemoryIDs(task.MemoryIDs)
+	var usedID uint
+	if len(ids) > 0 {
+		usedID = ids[0] // F 组只把“主规则”放到 memories[0]，用它做追责与 bandit 更新
+	}
+
+	s.fMu.Lock()
+	defer s.fMu.Unlock()
+	st := s.getOrInitFState(runID, taskType)
+	st.currentRound = round
+
+	// 更新 bandit
+	if usedID > 0 {
+		cs := st.stats[usedID]
+		if cs == nil {
+			cs = &fCandStat{}
+			st.stats[usedID] = cs
+		}
+		if feedback.Type == "correct" {
+			cs.wins++
+		} else if feedback.Type == "incorrect" {
+			cs.losses++
+		}
+	}
+
+	// 变更检测（连续 2 次判错 => 进入探索，重置 epoch）
+	if feedback.Type == "correct" {
+		st.consecutiveIncorrect = 0
+		return
+	}
+	if feedback.Type != "incorrect" {
+		return
+	}
+	st.consecutiveIncorrect++
+	if usedID > 0 {
+		// 最近用过且判错：短期封禁，避免下一轮继续被同一条旧规则带偏
+		st.banUntil[usedID] = round + 2
+	}
+	if st.consecutiveIncorrect >= 2 {
+		st.epoch++
+		st.consecutiveIncorrect = 0
+		st.exploreUntilRound = round + 3
+		// 清空 stats：进入新 epoch，让候选重新竞争（高频变更更敏捷）
+		st.stats = map[uint]*fCandStat{}
+	}
+}
+
+func (s *AgentService) selectFMemories(runID uint, taskType string, candidates []model.Memory) []model.Memory {
+	// 目标：从候选中选 1 条“主规则”（必须遵循），其余不喂（减少噪声）。
+	// 用 UCB 做探索/利用平衡；在探索期可返回 2 条（主规则+备选）。
+	if runID == 0 || len(candidates) == 0 {
+		return candidates
+	}
+
+	s.fMu.Lock()
+	st := s.getOrInitFState(runID, taskType)
+	cur := st.currentRound
+	s.fMu.Unlock()
+
+	// 过滤：过期封禁
+	avail := make([]model.Memory, 0, len(candidates))
+	for _, m := range candidates {
+		if m.ID == 0 {
+			continue
+		}
+		bu := 0
+		s.fMu.Lock()
+		bu = st.banUntil[m.ID]
+		s.fMu.Unlock()
+		if bu > 0 && cur <= bu {
+			// 仍在封禁窗口
+			continue
+		}
+		avail = append(avail, m)
+	}
+	if len(avail) == 0 {
+		avail = candidates
+	}
+
+	// 计算 total pulls
+	total := 0
+	s.fMu.Lock()
+	for _, cs := range st.stats {
+		total += cs.wins + cs.losses
+	}
+	s.fMu.Unlock()
+	if total < 1 {
+		total = 1
+	}
+
+	// UCB 选主规则
+	bestIdx := 0
+	bestScore := -1.0
+	for i, m := range avail {
+		w, l := 0, 0
+		s.fMu.Lock()
+		if cs := st.stats[m.ID]; cs != nil {
+			w, l = cs.wins, cs.losses
+		}
+		s.fMu.Unlock()
+		n := w + l
+		mean := float64(w+1) / float64(n+2) // 加一平滑
+		explore := math.Sqrt(2 * math.Log(float64(total+1)) / float64(n+1))
+		score := mean + explore
+		if score > bestScore {
+			bestScore = score
+			bestIdx = i
+		}
+	}
+
+	main := avail[bestIdx]
+
+	// 探索期：再给一个备选（不同 trigger_key 优先），让模型在冲突时有更大概率选到正确规则
+	s.fMu.Lock()
+	exploring := st.exploreUntilRound > 0 && cur <= st.exploreUntilRound
+	s.fMu.Unlock()
+
+	out := []model.Memory{main}
+	if exploring && len(avail) >= 2 {
+		for i := range avail {
+			if i == bestIdx {
+				continue
+			}
+			if avail[i].TriggerKey != "" && avail[i].TriggerKey == main.TriggerKey {
+				continue
+			}
+			out = append(out, avail[i])
+			break
+		}
+	}
+	return out
 }
 
 func (s *AgentService) retrieveRecentIncorrectFeedbacks(ctx context.Context, runID uint, taskType string, limit int) ([]model.Feedback, error) {

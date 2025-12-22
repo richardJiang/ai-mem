@@ -63,6 +63,23 @@ func GenerateConclusionFromStats(stats map[string]GroupStats, tests map[string]i
 		out["caveats"] = append(out["caveats"].([]string), "E组样本量不足，无法判断学习趋势（建议每组>=30）。")
 	}
 
+	// 趋势：F 前半 vs 后半（变更检测 + 候选竞争 + 自检纠错）
+	fTrend, okFTrend := trend["F"]
+	if okFTrend && len(fTrend) >= 10 {
+		first := avgInt(fTrend[:len(fTrend)/2])
+		last := avgInt(fTrend[len(fTrend)/2:])
+		out["metrics"].(map[string]interface{})["F_first_half_error_rate"] = first
+		out["metrics"].(map[string]interface{})["F_second_half_error_rate"] = last
+		if last < first {
+			out["claims"] = append(out["claims"].([]string), "F组错误率后半段低于前半段，表明“变更检测 + 候选竞争 + 自检纠错”在本次run内提升了规则切换适应能力。")
+			if out["verdict"] == "insufficient_data" {
+				out["verdict"] = "learning_observed"
+			}
+		}
+	} else {
+		out["caveats"] = append(out["caveats"].([]string), "F组样本量不足，无法判断学习趋势（建议每组>=30）。")
+	}
+
 	// 组间：C vs A, C vs B（需要显著性）
 	a, okA := stats["A"]
 	b, okB := stats["B"]
@@ -131,6 +148,32 @@ func GenerateConclusionFromStats(stats map[string]GroupStats, tests map[string]i
 		if e.ErrorRate < a.ErrorRate && e.ErrorRate < b.ErrorRate && e.ErrorRate < c.ErrorRate && e.ErrorRate < d.ErrorRate &&
 			pEA < 0.05 && pEB < 0.05 && pEC < 0.05 && pED < 0.05 {
 			out["claims"] = append(out["claims"].([]string), "在本次run内，E组错误率显著低于A/B/C/D组（p<0.05），支持“验证固化 + 自检纠错 + MemOS门控召回”优于 D 组策略。")
+			if out["verdict"] == "insufficient_data" {
+				out["verdict"] = "memory_effect_supported"
+			}
+		}
+	}
+
+	// 组间：F vs A/B/C/D/E（如果存在 F 组）
+	f, okF := stats["F"]
+	if okA && okB && okC && okD && okE && okF {
+		out["metrics"].(map[string]interface{})["F_error_rate"] = f.ErrorRate
+		out["metrics"].(map[string]interface{})["F_ci95"] = []float64{f.CI95Low, f.CI95High}
+		out["metrics"].(map[string]interface{})["p_F_vs_A"] = getPValue(tests, "F_vs_A")
+		out["metrics"].(map[string]interface{})["p_F_vs_B"] = getPValue(tests, "F_vs_B")
+		out["metrics"].(map[string]interface{})["p_F_vs_C"] = getPValue(tests, "F_vs_C")
+		out["metrics"].(map[string]interface{})["p_F_vs_D"] = getPValue(tests, "F_vs_D")
+		out["metrics"].(map[string]interface{})["p_F_vs_E"] = getPValue(tests, "F_vs_E")
+
+		pFA := getPValue(tests, "F_vs_A")
+		pFB := getPValue(tests, "F_vs_B")
+		pFC := getPValue(tests, "F_vs_C")
+		pFD := getPValue(tests, "F_vs_D")
+		pFE := getPValue(tests, "F_vs_E")
+		// 只要显著优于 E，同时也显著优于 D 与其他组，就给出强结论
+		if f.ErrorRate < e.ErrorRate && f.ErrorRate < d.ErrorRate && f.ErrorRate < c.ErrorRate && f.ErrorRate < b.ErrorRate && f.ErrorRate < a.ErrorRate &&
+			pFA < 0.05 && pFB < 0.05 && pFC < 0.05 && pFD < 0.05 && pFE < 0.05 {
+			out["claims"] = append(out["claims"].([]string), "在本次run内，F组错误率显著低于A/B/C/D/E组（p<0.05），支持“变更检测 + 候选竞争”在高频规则切换下进一步优于 E 组策略。")
 			if out["verdict"] == "insufficient_data" {
 				out["verdict"] = "memory_effect_supported"
 			}

@@ -108,6 +108,45 @@ func ComputeRunStatsAndTests(runID uint, groups []string, trend map[string][]int
 		}
 	}
 
+	// 组间显著性：F vs A/B/C/D/E（如果有 F 组）
+	if f, okF := stats["F"]; okF {
+		if a, okA := stats["A"]; okA {
+			p, z := twoPropZTest(a.Incorrect, a.N, f.Incorrect, f.N)
+			tests["F_vs_A"] = map[string]interface{}{
+				"p_value": p,
+				"z":       z,
+			}
+		}
+		if b, okB := stats["B"]; okB {
+			p, z := twoPropZTest(b.Incorrect, b.N, f.Incorrect, f.N)
+			tests["F_vs_B"] = map[string]interface{}{
+				"p_value": p,
+				"z":       z,
+			}
+		}
+		if c, okC := stats["C"]; okC {
+			p, z := twoPropZTest(c.Incorrect, c.N, f.Incorrect, f.N)
+			tests["F_vs_C"] = map[string]interface{}{
+				"p_value": p,
+				"z":       z,
+			}
+		}
+		if d, okD := stats["D"]; okD {
+			p, z := twoPropZTest(d.Incorrect, d.N, f.Incorrect, f.N)
+			tests["F_vs_D"] = map[string]interface{}{
+				"p_value": p,
+				"z":       z,
+			}
+		}
+		if e, okE := stats["E"]; okE {
+			p, z := twoPropZTest(e.Incorrect, e.N, f.Incorrect, f.N)
+			tests["F_vs_E"] = map[string]interface{}{
+				"p_value": p,
+				"z":       z,
+			}
+		}
+	}
+
 	// 趋势检验：C 前半 vs 后半（两比例检验）
 	if cTrend, ok := trend["C"]; ok && len(cTrend) >= 10 {
 		mid := len(cTrend) / 2
@@ -143,6 +182,20 @@ func ComputeRunStatsAndTests(runID uint, groups []string, trend map[string][]int
 		lastN, lastBad := len(eTrend)-mid, sumInt(eTrend[mid:])
 		p, z := twoPropZTest(firstBad, firstN, lastBad, lastN)
 		tests["E_trend_first_vs_second_half"] = map[string]interface{}{
+			"p_value":                p,
+			"z":                      z,
+			"first_half_error_rate":  float64(firstBad) / math.Max(float64(firstN), 1),
+			"second_half_error_rate": float64(lastBad) / math.Max(float64(lastN), 1),
+		}
+	}
+
+	// 趋势检验：F 前半 vs 后半（两比例检验）
+	if fTrend, ok := trend["F"]; ok && len(fTrend) >= 10 {
+		mid := len(fTrend) / 2
+		firstN, firstBad := mid, sumInt(fTrend[:mid])
+		lastN, lastBad := len(fTrend)-mid, sumInt(fTrend[mid:])
+		p, z := twoPropZTest(firstBad, firstN, lastBad, lastN)
+		tests["F_trend_first_vs_second_half"] = map[string]interface{}{
 			"p_value":                p,
 			"z":                      z,
 			"first_half_error_rate":  float64(firstBad) / math.Max(float64(firstN), 1),

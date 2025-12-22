@@ -52,7 +52,7 @@ if [[ "${http_code}" != "200" ]] || [[ -z "${resp_trim}" ]]; then
   exit 1
 fi
 
-echo "$resp" | python3 - <<'PY'
+printf '%s' "$resp" | python3 -c '
 import json,sys
 s=sys.stdin.read()
 ss=s.strip()
@@ -68,11 +68,11 @@ except Exception as e:
     print("RAW_RESPONSE_END")
     sys.exit(1)
 
-res=obj.get('result',{}) if isinstance(obj, dict) else {}
-print('run_id:', res.get('run_id') if isinstance(res, dict) else None)
-print('result_path:', (obj.get('result_path') if isinstance(obj, dict) else None) or (res.get('result_path') if isinstance(res, dict) else None))
-print('conclusion_path:', (obj.get('conclusion_path') if isinstance(obj, dict) else None) or (res.get('conclusion_path') if isinstance(res, dict) else None))
-print('verdict:', ((res.get('conclusion') or {}) if isinstance(res, dict) else {}).get('verdict'))
-PY
+res=obj.get("result",{}) if isinstance(obj, dict) else {}
+print("run_id:", res.get("run_id") if isinstance(res, dict) else None)
+print("result_path:", (obj.get("result_path") if isinstance(obj, dict) else None) or (res.get("result_path") if isinstance(res, dict) else None))
+print("conclusion_path:", (obj.get("conclusion_path") if isinstance(obj, dict) else None) or (res.get("conclusion_path") if isinstance(res, dict) else None))
+print("verdict:", ((res.get("conclusion") or {}) if isinstance(res, dict) else {}).get("verdict"))
+'
 
 echo "[experiment] 完成。请打开 outputs/experiment_run_<run_id>_conclusion.md 查看结论。"

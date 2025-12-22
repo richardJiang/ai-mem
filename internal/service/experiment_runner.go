@@ -69,7 +69,7 @@ func (r *ExperimentRunner) Run(ctx context.Context, req ExperimentRunRequest) (*
 		req.Seed = time.Now().UnixNano()
 	}
 	if len(req.Groups) == 0 {
-		req.Groups = []string{"A", "B", "C", "D", "E"}
+		req.Groups = []string{"A", "B", "C", "D", "E", "F"}
 	}
 	if req.RuleMode == "" {
 		req.RuleMode = "none"
@@ -140,6 +140,10 @@ func (r *ExperimentRunner) Run(ctx context.Context, req ExperimentRunRequest) (*
 
 		for _, group := range req.Groups {
 			useMemory := group != "A"
+			if group == "F" {
+				// F 组：执行前设置当前 round，便于短期封禁/探索期生效
+				r.agent.SetFCurrentRound(run.ID, req.TaskType, i)
+			}
 			task, err := r.agent.ExecuteTaskInRun(ctx, run.ID, req.TaskType, inputStr, group, useMemory)
 			if err != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("run=%d group=%s round=%d execute failed: %v", run.ID, group, i, err))
@@ -181,6 +185,11 @@ func (r *ExperimentRunner) Run(ctx context.Context, req ExperimentRunRequest) (*
 					"rule_threshold": threshold,
 				}).Error
 
+			// F 组：判题后更新“变更检测/epoch/bandit”状态（不依赖反思）
+			if group == "F" {
+				r.agent.UpdateFStateAfterJudge(ctx, run.ID, req.TaskType, task, feedback, i)
+			}
+
 			if feedback.Type == "incorrect" {
 				result.Trend[group] = append(result.Trend[group], 1)
 				if group == "C" {
@@ -198,9 +207,15 @@ func (r *ExperimentRunner) Run(ctx context.Context, req ExperimentRunRequest) (*
 						result.Errors = append(result.Errors, fmt.Sprintf("run=%d group=%s round=%d reflect+validate+consolidate failed: %v", run.ID, group, i, err))
 					}
 				}
+				if group == "F" {
+					// F 组：仍然用“验证固化”产出高质量记忆，但策略上更强调变更检测+候选竞争
+					if _, err := r.reflection.ReflectAndSaveMemoryAndConsolidateGlobalValidated(ctx, task.ID, feedback); err != nil {
+						result.Errors = append(result.Errors, fmt.Sprintf("run=%d group=%s round=%d reflect+validate+consolidate failed: %v", run.ID, group, i, err))
+					}
+				}
 			} else {
 				// 判对：对本次使用到的记忆做“验证时间”更新，帮助规则变更场景下优先检索当前有效规则
-				if (group == "C" || group == "D" || group == "E") && task.MemoryIDs != "" {
+				if (group == "C" || group == "D" || group == "E" || group == "F") && task.MemoryIDs != "" {
 					ids := ParseMemoryIDs(task.MemoryIDs)
 					if len(ids) > 0 {
 						now := time.Now()
